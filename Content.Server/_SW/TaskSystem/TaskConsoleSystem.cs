@@ -34,7 +34,7 @@ public sealed partial class TaskConsoleSystem : EntitySystem
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1);
 
     private TimeSpan _nextRefresh;
-    private readonly HashSet<(EntityUid Console, EntityUid Actor)> _adminGhostViewers = new();
+    private readonly HashSet<(EntityUid Console, EntityUid Actor)> _viewers = new();
 
     public override void Initialize()
     {
@@ -53,28 +53,28 @@ public sealed partial class TaskConsoleSystem : EntitySystem
 
     private void OnAdminPermsChanged(AdminPermsChangedEventArgs args)
     {
-        ValidateAdminGhostViewers();
+        ValidateViewers();
     }
 
     private void OnOpened(Entity<TaskConsoleComponent> ent, ref BoundUIOpenedEvent args)
     {
-        if (HasComp<GhostComponent>(args.Actor) && !_sharedConsole.HasOrdinaryAccess(args.Actor, ent))
-        {
-            if (!CanAdminGhostView(args.Actor, ent))
-            {
-                _uiSystem.CloseUi(ent.Owner, TaskConsoleUiKey.Key, args.Actor);
-                return;
-            }
+        if (!Equals(args.UiKey, TaskConsoleUiKey.Key))
+            return;
 
-            _adminGhostViewers.Add((ent.Owner, args.Actor));
+        if (!_sharedConsole.HasOrdinaryAccess(args.Actor, ent) && !CanAdminGhostView(args.Actor, ent))
+        {
+            _uiSystem.CloseUi(ent.Owner, TaskConsoleUiKey.Key, args.Actor);
+            return;
         }
+
+        _viewers.Add((ent.Owner, args.Actor));
         UpdateTaskConsoleInterface(ent.Owner, ent.Comp);
     }
 
     private void OnClosed(Entity<TaskConsoleComponent> ent, ref BoundUIClosedEvent args)
     {
         if (Equals(args.UiKey, TaskConsoleUiKey.Key))
-            _adminGhostViewers.Remove((ent.Owner, args.Actor));
+            _viewers.Remove((ent.Owner, args.Actor));
     }
 
     private void OnAdminGhostAccess(Entity<TaskConsoleComponent> ent, ref SWTaskConsoleAdminGhostAccessEvent args)
@@ -94,7 +94,7 @@ public sealed partial class TaskConsoleSystem : EntitySystem
     public override void Update(float frameTime)
     {
         base.Update(frameTime);
-        ValidateAdminGhostViewers();
+        ValidateViewers();
 
         if (_timing.CurTime < _nextRefresh)
         {
@@ -113,22 +113,22 @@ public sealed partial class TaskConsoleSystem : EntitySystem
         }
     }
 
-    private void ValidateAdminGhostViewers()
+    private void ValidateViewers()
     {
-        // Track subscriptions, not permissions: revalidate even if the ghost component is removed.
-        foreach (var (console, actor) in _adminGhostViewers.ToArray())
+        // Revalidate every subscription, including when an ID or ghost component is removed.
+        foreach (var (console, actor) in _viewers.ToArray())
         {
             if (!TryComp<TaskConsoleComponent>(console, out var component) ||
                 !_uiSystem.IsUiOpen(console, TaskConsoleUiKey.Key, actor))
             {
-                _adminGhostViewers.Remove((console, actor));
+                _viewers.Remove((console, actor));
                 continue;
             }
 
-            if (_sharedConsole.HasOrdinaryAccess(actor, (console, component)) || CanAdminGhostView(actor, (console, component)))
+            if (_sharedConsole.HasOrdinaryAccessWithoutLogging(actor, (console, component)) || CanAdminGhostView(actor, (console, component)))
                 continue;
 
-            _adminGhostViewers.Remove((console, actor));
+            _viewers.Remove((console, actor));
             _uiSystem.CloseUi(console, TaskConsoleUiKey.Key, actor);
         }
 
@@ -147,7 +147,7 @@ public sealed partial class TaskConsoleSystem : EntitySystem
         }
         var state = new TaskConsoleBounderUserInterfaceState(listComp);
 
-        ValidateAdminGhostViewers();
+        ValidateViewers();
         _uiSystem.SetUiState(uid, TaskConsoleUiKey.Key, state);
     }
 
