@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Content.Shared._SW.ModularSaber;
 using Content.Shared.ActionBlocker;
 using Content.Shared.Hands.EntitySystems;
@@ -96,34 +97,62 @@ public sealed class SWModularSaberSystem : EntitySystem
     private static bool IsSaberSlot(ItemSlot slot) =>
         slot.ID is "saber-crystal" or "saber-emitter" or "saber-focus";
 
-    private bool CanModify(EntityUid saber, EntityUid user)
+    internal bool CanModify(EntityUid saber, EntityUid user)
     {
         return !_toggle.IsActivated(saber) && _tags.HasTag(user, "ForceUser") &&
                _blocker.CanInteract(user, saber) && _interaction.IsAccessible(user, saber) &&
                _interaction.InRangeUnobstructed(user, saber);
     }
 
+    private bool CanModifyPart(EntityUid hilt, EntityUid target, EntityUid user) =>
+        CanModify(target, user) &&
+        (hilt == target || (!_toggle.IsActivated(hilt) && _containers.TryGetContainingContainer(hilt, out var container) &&
+                           container.Owner == target));
+
     private void OnInteractUsing(Entity<SWModularSaberComponent> ent, ref InteractUsingEvent args)
     {
-        if (args.Handled || !CanModify(ent.Owner, args.User) || _hands.GetActiveItem(args.User) != args.Used)
-            return;
-
-        ItemSlot? slot = HasComp<SWSaberCrystalComponent>(args.Used) ? ent.Comp.Crystal :
-                         HasComp<SWSaberEmitterComponent>(args.Used) ? ent.Comp.Emitter :
-                         HasComp<SWSaberFocusComponent>(args.Used) ? ent.Comp.Focus : null;
-        if (slot?.ContainerSlot == null || slot.HasItem || !FitsSlot(args.Used, slot) ||
-            !_containers.CanInsert(args.Used, slot.ContainerSlot))
+        if (args.Handled || !CanModify(ent.Owner, args.User) || _hands.GetActiveItem(args.User) != args.Used ||
+            !TryGetInsertSlot(ent.Owner, args.Used, out var slot))
             return;
 
         args.Handled = true;
-        if (!_hands.TryDrop(args.User, args.Used))
-            return;
+        TryInsertPart(ent.Owner, ent.Owner, args.User, args.Used, slot);
+    }
 
-        // Insertion can fail after drop if another event changes the container. Preserve the item.
-        if (!CanModify(ent.Owner, args.User) || slot.HasItem || !FitsSlot(args.Used, slot) ||
-            !_containers.CanInsert(args.Used, slot.ContainerSlot) ||
-            !_containers.Insert(args.Used, slot.ContainerSlot))
-            _hands.PickupOrDrop(args.User, args.Used, dropNear: true);
+    internal bool TryGetInsertSlot(EntityUid hilt, EntityUid item, [NotNullWhen(true)] out ItemSlot? slot)
+    {
+        slot = null;
+        if (!TryComp<SWModularSaberComponent>(hilt, out var parts))
+            return false;
+
+        slot = HasComp<SWSaberCrystalComponent>(item) ? parts.Crystal :
+            HasComp<SWSaberEmitterComponent>(item) ? parts.Emitter :
+            HasComp<SWSaberFocusComponent>(item) ? parts.Focus : null;
+        return slot != null && CanInsertPart(item, slot);
+    }
+
+    internal bool TryGetPartSlot(EntityUid hilt, string id, [NotNullWhen(true)] out ItemSlot? slot)
+    {
+        return _slots.TryGetSlot(hilt, id, out slot) && IsSaberSlot(slot);
+    }
+
+    private bool CanInsertPart(EntityUid item, ItemSlot slot) =>
+        slot.ContainerSlot != null && !slot.HasItem && FitsSlot(item, slot) &&
+        _containers.CanInsert(item, slot.ContainerSlot);
+
+    internal bool TryInsertPart(EntityUid hilt, EntityUid target, EntityUid user, EntityUid item, ItemSlot slot)
+    {
+        if (!CanModifyPart(hilt, target, user) || _hands.GetActiveItem(user) != item ||
+            slot.ContainerSlot?.Owner != hilt || !CanInsertPart(item, slot) || !_hands.TryDrop(user, item))
+            return false;
+
+        // A drop can change the target or slot through other interactions. Preserve the part on failure.
+        if (CanModifyPart(hilt, target, user) && slot.ContainerSlot is { } container && container.Owner == hilt &&
+            CanInsertPart(item, slot) && _containers.Insert(item, container))
+            return true;
+
+        _hands.PickupOrDrop(user, item, dropNear: true);
+        return false;
     }
 
     private bool FitsSlot(EntityUid part, ItemSlot slot) =>
@@ -152,16 +181,19 @@ public sealed class SWModularSaberSystem : EntitySystem
         {
             Text = Loc.GetString(label),
             Category = VerbCategory.Eject,
-            Act = () => Eject(ent.Owner, user, slot),
+            Act = () => TryEjectPart(ent.Owner, ent.Owner, user, slot),
         });
     }
 
-    private void Eject(EntityUid saber, EntityUid user, ItemSlot slot)
+    internal bool TryEjectPart(EntityUid hilt, EntityUid target, EntityUid user, ItemSlot slot, EntityUid? expected = null)
     {
-        if (!CanModify(saber, user) || slot.Item is not { } item || slot.ContainerSlot == null ||
-            !_blocker.CanPickup(user, item) || !_containers.Remove(item, slot.ContainerSlot))
-            return;
+        if (!CanModifyPart(hilt, target, user) || slot.Item is not { } item ||
+            slot.ContainerSlot is not { } container || container.Owner != hilt || (expected != null && item != expected) ||
+            !_blocker.CanPickup(user, item) || !_containers.Remove(item, container))
+            return false;
+
         _hands.PickupOrDrop(user, item, dropNear: true);
+        return true;
     }
 
     private void OnDestruction(EntityUid uid, SWModularSaberComponent comp, DestructionEventArgs args)
@@ -231,6 +263,16 @@ public sealed class SWModularSaberSystem : EntitySystem
     }
 
     internal bool HasCompleteAssembly(EntityUid saber) => TryGetAssembly(saber, out _);
+
+    internal bool TryGetAssemblyColor(EntityUid saber, out Color color)
+    {
+        color = default;
+        if (!TryGetAssembly(saber, out var parts))
+            return false;
+
+        color = parts.Crystal.Color;
+        return true;
+    }
 
     internal bool TryApplyAssembly(EntityUid saber, EntityUid weapon, DamageSpecifier? bonus = null) =>
         TryGetAssembly(saber, out var parts) && TryApplyAssembly(parts, weapon, bonus);

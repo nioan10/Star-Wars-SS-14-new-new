@@ -275,11 +275,12 @@ public abstract class SharedWieldableSystem : EntitySystem
     }
 
     /// <summary>
-    ///     Attempts to wield an item, starting a UseDelay after.
+    ///     Attempts to wield an item, respecting and restarting its use delay by default.
     /// </summary>
     /// <returns>True if the attempt wasn't blocked.</returns>
     //SW start: allow automatic wielding without dropping other items
-    public bool TryWield(EntityUid used, WieldableComponent component, EntityUid user, bool dropOthers = true, bool quiet = false)
+    public bool TryWield(EntityUid used, WieldableComponent component, EntityUid user, bool dropOthers = true,
+        bool quiet = false, bool respectUseDelay = true, bool requireHeldGrip = false)
     //SW end
     {
         //SW start: let callers report a single contextual failure
@@ -287,7 +288,7 @@ public abstract class SharedWieldableSystem : EntitySystem
         //SW end
             return false;
 
-        if (TryComp(used, out UseDelayComponent? useDelay) && component.UseDelayOnWield)
+        if (respectUseDelay && component.UseDelayOnWield && TryComp(used, out UseDelayComponent? useDelay))
         {
             if (!_delay.TryResetDelay((used, useDelay), true))
                 return false;
@@ -327,7 +328,9 @@ public abstract class SharedWieldableSystem : EntitySystem
             //SW end
             {
                 virtuals.Add(virtualItem.Value);
-                continue;
+                // A virtual item can spawn even if its insertion into the hand is refused.
+                if (!requireHeldGrip || _hands.IsHolding(user, virtualItem.Value))
+                    continue;
             }
 
             foreach (var existingVirtual in virtuals)

@@ -97,15 +97,32 @@
     predictable: false
   - type: EnergySword
     colorOptions: []
+  - type: SWSplitSaberStaffVisuals
+  - type: ToggleableVisuals
+    spriteLayer: blade
+    inhandVisuals:
+      left:
+      - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_inhands.rsi
+        state: inhand-left-lead
+        shader: unshaded
+      right:
+      - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_inhands.rsi
+        state: inhand-right-lead
+        shader: unshaded
   - type: Sprite
     sprite: Objects/Weapons/Melee/e_sword_double.rsi
     layers:
     - state: e_sword_double
-    - state: e_sword_double_blade
-      color: "#FFFFFF"
+    - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_blades.rsi
+      state: lead
       visible: false
       shader: unshaded
       map: [ "blade" ]
+    - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_blades.rsi
+      state: tail
+      visible: false
+      shader: unshaded
+      map: [ "staff-tail-blade" ]
   - type: Item
     sprite: Objects/Weapons/Melee/e_sword_double-inhands.rsi
 

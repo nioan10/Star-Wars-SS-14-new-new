@@ -1,9 +1,13 @@
+using System.Diagnostics.CodeAnalysis;
+using Content.Shared._SW.ModularSaber;
 using Content.Shared.ActionBlocker;
 using Content.Shared.Hands.EntitySystems;
+using Content.Shared.Inventory.VirtualItem;
 using Content.Shared.Item.ItemToggle;
 using Content.Shared.Item.ItemToggle.Components;
 using Content.Shared.Popups;
 using Content.Shared.Verbs;
+using Content.Shared.Wieldable;
 using Content.Shared.Wieldable.Components;
 using Robust.Shared.Containers;
 
@@ -21,7 +25,17 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     [Dependency] private readonly SharedPopupSystem _popup = default!;
     [Dependency] private readonly SharedTransformSystem _transform = default!;
     [Dependency] private readonly ItemToggleSystem _toggle = default!;
+    [Dependency] private readonly SharedWieldableSystem _wieldable = default!;
     [Dependency] private readonly SWModularSaberSystem _modular = default!;
+
+    [Dependency] private readonly SharedAppearanceSystem _appearance = default!;
+
+    private static readonly (string Slot, string Label)[] PartSlots =
+    {
+        ("saber-crystal", "sw-modular-saber-slot-crystal"),
+        ("saber-emitter", "sw-modular-saber-slot-emitter"),
+        ("saber-focus", "sw-modular-saber-slot-focus"),
+    };
 
     private readonly record struct Pair(
         EntityUid Staff,
@@ -40,6 +54,7 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     {
         base.Initialize();
         SubscribeLocalEvent<SWSplitSaberStaffComponent, GetVerbsEvent<AlternativeVerb>>(OnStaffVerbs);
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, GetVerbsEvent<InteractionVerb>>(OnInsertVerbs);
         SubscribeLocalEvent<SWSplitSaberHalfComponent, GetVerbsEvent<AlternativeVerb>>(OnHalfVerbs);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemToggleActivateAttemptEvent>(OnActivate);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemToggledEvent>(OnToggled);
@@ -78,19 +93,110 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
 
     private void OnStaffVerbs(Entity<SWSplitSaberStaffComponent> staff, ref GetVerbsEvent<AlternativeVerb> args)
     {
-        if (!args.CanAccess || !args.CanInteract || !_hands.IsHolding(args.User, staff.Owner))
+        if (!args.CanAccess || !args.CanInteract)
             return;
 
         var user = args.User;
-        args.Verbs.Add(new AlternativeVerb
+        if (_hands.IsHolding(user, staff.Owner))
         {
-            Text = Loc.GetString("sw-split-saber-staff-separate"),
-            Act = () =>
+            args.Verbs.Add(new AlternativeVerb
             {
-                if (!TrySplit(user, staff.Owner))
-                    _popup.PopupEntity(Loc.GetString("sw-split-saber-staff-separate-failed"), user, user);
-            },
-        });
+                Text = Loc.GetString("sw-split-saber-staff-separate"),
+                Act = () =>
+                {
+                    if (!TrySplit(user, staff.Owner))
+                        _popup.PopupEntity(Loc.GetString("sw-split-saber-staff-separate-failed"), user, user);
+                },
+            });
+        }
+
+        if (TryGetServicePair(user, staff.Owner, out var pair))
+        {
+            AddEjectVerbs(user, pair, pair.Lead, leading: true, args.Verbs);
+            AddEjectVerbs(user, pair, pair.Tail, leading: false, args.Verbs);
+        }
+    }
+
+    private void AddEjectVerbs(EntityUid user, Pair pair, EntityUid hilt, bool leading, SortedSet<AlternativeVerb> verbs)
+    {
+        foreach (var (slotId, label) in PartSlots)
+        {
+            if (!_modular.TryGetPartSlot(hilt, slotId, out var slot) || slot.Item is not { } part)
+                continue;
+
+            verbs.Add(new AlternativeVerb
+            {
+                Text = PartVerbText("sw-split-saber-staff-eject-part", leading, label),
+                Category = VerbCategory.Eject,
+                IconEntity = GetNetEntity(part),
+                Act = () => TryEjectPart(user, pair.Staff, leading, slotId, part),
+            });
+        }
+    }
+
+    private void OnInsertVerbs(Entity<SWSplitSaberStaffComponent> staff, ref GetVerbsEvent<InteractionVerb> args)
+    {
+        if (!args.CanAccess || !args.CanInteract || args.Using is not { } item ||
+            !TryGetServicePair(args.User, staff.Owner, out var pair))
+            return;
+
+        AddInsertVerb(args.User, pair, pair.Lead, item, leading: true, args.Verbs);
+        AddInsertVerb(args.User, pair, pair.Tail, item, leading: false, args.Verbs);
+    }
+
+    private void AddInsertVerb(EntityUid user, Pair pair, EntityUid hilt, EntityUid item, bool leading, SortedSet<InteractionVerb> verbs)
+    {
+        if (!_modular.TryGetInsertSlot(hilt, item, out var slot))
+            return;
+
+        foreach (var (slotId, label) in PartSlots)
+        {
+            if (slot.ID != slotId)
+                continue;
+
+            verbs.Add(new InteractionVerb
+            {
+                Text = PartVerbText("sw-split-saber-staff-insert-part", leading, label),
+                Category = VerbCategory.Insert,
+                IconEntity = GetNetEntity(item),
+                Act = () => TryInsertPart(user, pair.Staff, item, leading),
+            });
+            return;
+        }
+    }
+
+    private static string PartVerbText(string verb, bool leading, string part) =>
+        Loc.GetString(verb,
+            ("half", Loc.GetString(leading ? "sw-split-saber-staff-leading" : "sw-split-saber-staff-trailing")),
+            ("part", Loc.GetString(part)));
+
+    private bool TryGetServicePair(EntityUid user, EntityUid staff, out Pair pair)
+    {
+        pair = default;
+        return TryComp<SWSplitSaberStaffComponent>(staff, out var assembly) && !assembly.Changing &&
+               TryGetPair((staff, assembly), out pair) && pair.Joined &&
+               !_toggle.IsActivated(pair.Lead) && !_toggle.IsActivated(pair.Tail) &&
+               _modular.CanModify(staff, user);
+    }
+
+    public bool TryInsertPart(EntityUid user, EntityUid staff, EntityUid item, bool leading)
+    {
+        if (!TryGetServicePair(user, staff, out var pair) || !_actionBlocker.CanUseHeldEntity(user, item))
+            return false;
+
+        var half = leading ? pair.Lead : pair.Tail;
+        return _modular.TryGetInsertSlot(half, item, out var slot) &&
+               _modular.TryInsertPart(half, staff, user, item, slot);
+    }
+
+    public bool TryEjectPart(EntityUid user, EntityUid staff, bool leading, string slotId, EntityUid? expected = null)
+    {
+        if (!TryGetServicePair(user, staff, out var pair))
+            return false;
+
+        var half = leading ? pair.Lead : pair.Tail;
+        return _modular.TryGetPartSlot(half, slotId, out var slot) &&
+               _modular.TryEjectPart(half, staff, user, slot, expected);
     }
 
     private void OnHalfVerbs(Entity<SWSplitSaberHalfComponent> half, ref GetVerbsEvent<AlternativeVerb> args)
@@ -114,27 +220,42 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     {
         if (!TryComp<SWSplitSaberStaffComponent>(staffUid, out var staff) || staff.Changing ||
             !TryGetPair((staffUid, staff), out var pair) || !pair.Joined ||
-            _toggle.IsActivated(staffUid) ||
-            (TryComp<WieldableComponent>(staffUid, out var wieldable) && wieldable.Wielded) ||
-            !_hands.IsHolding(user, staffUid, out var staffHand) || !_hands.TryGetEmptyHand(user, out var freeHand) ||
+            !TryComp<WieldableComponent>(staffUid, out var wieldable) ||
+            !_hands.IsHolding(user, staffUid, out var staffHand) ||
+            !TryGetSplitHand(user, staffUid, wieldable.Wielded, out var freeHand, out var grip) ||
             !_actionBlocker.CanInteract(user, staffUid) || !_hands.CanDrop(user, staffUid) ||
             !_actionBlocker.CanPickup(user, pair.Lead) || !_actionBlocker.CanPickup(user, pair.Tail))
             return false;
 
+        var wasActive = _toggle.IsActivated(staffUid);
+        var wasWielded = wieldable.Wielded;
         staff.Changing = true;
         var completed = false;
         try
         {
-            completed = _hands.TryDrop(user, staffUid) && TakeApart(pair, restoring: false) &&
+            completed = ReleaseGrip(user, staffUid, wieldable, grip) &&
+                        SetActive(user, staffUid, false) &&
+                        _hands.TryDrop(user, staffUid) && TakeApart(pair, restoring: false) &&
                         _hands.TryPickup(user, pair.Lead, staffHand, animate: false) &&
                         _hands.TryPickup(user, pair.Tail, freeHand, animate: false) &&
+                        SetActive(user, pair.Lead, wasActive) && SetActive(user, pair.Tail, wasActive) &&
                         _hands.IsHolding(user, pair.Lead) && _hands.IsHolding(user, pair.Tail) && pair.Separated;
             return completed;
         }
         finally
         {
-            if (!completed && PutTogether(pair, restoring: true) && !_hands.IsHolding(user, staffUid))
-                _hands.TryPickup(user, staffUid, staffHand, animate: false);
+            if (!completed)
+            {
+                SetActive(user, pair.Lead, false);
+                SetActive(user, pair.Tail, false);
+                if (PutTogether(pair, restoring: true) &&
+                    (_hands.IsHolding(user, staffUid) || _hands.TryPickup(user, staffUid, staffHand, animate: false)))
+                {
+                    if (wasWielded && !wieldable.Wielded)
+                        TryWieldStaff(user, staffUid, wieldable);
+                    SetActive(user, staffUid, wasActive);
+                }
+            }
 
             staff.Changing = false;
         }
@@ -145,36 +266,108 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         if (!TryComp<SWSplitSaberHalfComponent>(half, out var link) || link.Staff is not { } staffUid ||
             !TryComp<SWSplitSaberStaffComponent>(staffUid, out var staff) || staff.Changing ||
             !TryGetPair((staffUid, staff), out var pair) || !pair.Separated || (half != pair.Lead && half != pair.Tail) ||
+            !TryComp<WieldableComponent>(staffUid, out var wieldable) || wieldable.Wielded ||
             !_hands.IsHolding(user, pair.Lead, out var leadHand) || !_hands.IsHolding(user, pair.Tail, out var tailHand) ||
-            _toggle.IsActivated(pair.Lead) || _toggle.IsActivated(pair.Tail) ||
             !_modular.HasCompleteAssembly(pair.Lead) || !_modular.HasCompleteAssembly(pair.Tail) ||
             !_actionBlocker.CanInteract(user, half) || !_hands.CanDrop(user, pair.Lead) ||
             !_hands.CanDrop(user, pair.Tail) || !_actionBlocker.CanPickup(user, staffUid))
             return false;
 
+        var leadActive = _toggle.IsActivated(pair.Lead);
+        var tailActive = _toggle.IsActivated(pair.Tail);
+        var staffHand = half == pair.Lead ? leadHand : tailHand;
         staff.Changing = true;
         var completed = false;
         try
         {
-            completed = _hands.TryDrop(user, pair.Lead) && _hands.TryDrop(user, pair.Tail) &&
+            completed = SetActive(user, pair.Lead, false) && SetActive(user, pair.Tail, false) &&
+                        _hands.TryDrop(user, pair.Lead) && _hands.TryDrop(user, pair.Tail) &&
                         PutTogether(pair, restoring: false) &&
-                        _hands.TryPickup(user, staffUid, half == pair.Lead ? leadHand : tailHand, animate: false) &&
+                        _hands.TryPickup(user, staffUid, staffHand, animate: false) &&
+                        (!(leadActive || tailActive) ||
+                         (TryWieldStaff(user, staffUid, wieldable) && _toggle.IsActivated(staffUid))) &&
                         _hands.IsHolding(user, staffUid) && pair.Joined;
             return completed;
         }
         finally
         {
-            if (!completed && TakeApart(pair, restoring: true))
+            if (!completed)
             {
-                if (!_hands.IsHolding(user, pair.Lead))
-                    _hands.TryPickup(user, pair.Lead, leadHand, animate: false);
-                if (!_hands.IsHolding(user, pair.Tail))
-                    _hands.TryPickup(user, pair.Tail, tailHand, animate: false);
+                if (wieldable.Wielded)
+                    ReleaseGrip(user, staffUid, wieldable, FindGripPlaceholder(user, staffUid), force: true);
+                SetActive(user, staffUid, false);
+                if (TakeApart(pair, restoring: true))
+                {
+                    if (!_hands.IsHolding(user, pair.Lead))
+                        _hands.TryPickup(user, pair.Lead, leadHand, animate: false);
+                    if (!_hands.IsHolding(user, pair.Tail))
+                        _hands.TryPickup(user, pair.Tail, tailHand, animate: false);
+                    SetActive(user, pair.Lead, leadActive);
+                    SetActive(user, pair.Tail, tailActive);
+                }
             }
 
             staff.Changing = false;
         }
     }
+
+    private bool TryGetSplitHand(EntityUid user, EntityUid staff, bool wielded,
+        [NotNullWhen(true)] out string? hand, out EntityUid? placeholder)
+    {
+        placeholder = null;
+        if (_hands.TryGetEmptyHand(user, out hand))
+            return true;
+
+        if (!wielded || FindGripPlaceholder(user, staff) is not { } grip || !_hands.IsHolding(user, grip, out hand))
+            return false;
+
+        placeholder = grip;
+        return true;
+    }
+
+    private EntityUid? FindGripPlaceholder(EntityUid user, EntityUid staff)
+    {
+        foreach (var held in _hands.EnumerateHeld(user))
+        {
+            if (TryComp<VirtualItemComponent>(held, out var item) && item.BlockingEntity == staff)
+                return held;
+        }
+
+        return null;
+    }
+
+    private bool ReleaseGrip(EntityUid user, EntityUid staff, WieldableComponent wieldable, EntityUid? placeholder,
+        bool force = false)
+    {
+        if (wieldable.Wielded && !_wieldable.TryUnwield(staff, wieldable, user, force))
+            return false;
+
+        // Native unwield queues its virtual item for deletion. This transaction needs that same hand now.
+        if (placeholder is { } grip && _hands.IsHolding(user, grip) &&
+            TryComp<VirtualItemComponent>(grip, out var item) && item.BlockingEntity == staff)
+            Del(grip);
+
+        return true;
+    }
+
+    private bool TryWieldStaff(EntityUid user, EntityUid staff, WieldableComponent wieldable)
+    {
+        if (!_hands.TryGetEmptyHand(user, out _))
+            return false;
+        var wielded = _wieldable.TryWield(staff, wieldable, user, dropOthers: false, quiet: true,
+            respectUseDelay: false, requireHeldGrip: true);
+        var grip = FindGripPlaceholder(user, staff);
+        if (wielded && wieldable.Wielded && grip != null)
+            return true;
+
+        // Native wield sets Wielded before creating the grip, and its callbacks can remove it.
+        ReleaseGrip(user, staff, wieldable, grip, force: true);
+        SetActive(user, staff, false);
+        return false;
+    }
+
+    private bool SetActive(EntityUid user, EntityUid item, bool active) =>
+        !TerminatingOrDeleted(item) && _toggle.TrySetActive(item, active, user, predicted: false, showPopup: false);
 
     private bool PutTogether(Pair pair, bool restoring)
     {
@@ -215,12 +408,15 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
 
         if (!TryComp<WieldableComponent>(staff.Owner, out var wieldable) || !wieldable.Wielded ||
             !TryGetPair(staff, out var pair) || !pair.Joined ||
-            !_modular.HasCompleteAssembly(pair.Tail) ||
+            !_modular.TryGetAssemblyColor(pair.Tail, out var tailColor) ||
             !_modular.TryApplyAssembly(pair.Lead, staff.Owner, staff.Comp.JoinedDamageBonus))
         {
             args.Cancelled = true;
             args.Popup = Loc.GetString("sw-split-saber-staff-incomplete");
+            return;
         }
+
+        _appearance.SetData(staff.Owner, SWSplitSaberStaffVisuals.TailColor, tailColor);
     }
 
     private void OnToggled(Entity<SWSplitSaberStaffComponent> staff, ref ItemToggledEvent args) =>
