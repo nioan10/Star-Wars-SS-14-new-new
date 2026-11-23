@@ -1,12 +1,15 @@
 {
   "version": 1,
   "license": "CC-BY-SA-3.0",
-  "copyright": "Taken from tgstation at https://github.com/tgstation/tgstation; separated into independent blade layers for the split lightsaber staff.",
+  "copyright": "Original SW14 split lightsaber staff art, based on a generated hilt concept, with game-scale poses and blade frames produced for this project.",
   "size": {
-    "x": 32,
-    "y": 32
+    "x": 64,
+    "y": 64
   },
   "states": [
+    {
+      "name": "hilt"
+    },
     {
       "name": "lead",
       "delays": [

@@ -32,6 +32,8 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
     [Dependency] private readonly ActionsSystem _actionsSystem = default!;
     [Dependency] private readonly SharedWieldableSystem _wieldable = default!;
     [Dependency] private readonly ItemToggleSystem _toggle = default!;
+    [Dependency] private readonly SWDoubleSaberThrowVisualSystem _saberThrows = default!;
+    [Dependency] private readonly SWSplitSaberStaffSystem _splitStaff = default!;
     public override void Initialize()
     {
         SubscribeLocalEvent<ForceAbilityDistanceInteractComponent, ComponentInit>(OnCompInit);
@@ -48,7 +50,7 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
 
     private void OnCompShutdown(Entity<ForceAbilityDistanceInteractComponent> ent, ref ComponentShutdown args)
     {
-        if (ent.Comp.ReturningPairedSaber)
+        if (RequiresOwnedAttraction(ent.Comp))
             StopAttractingByForce(ent.Owner, ent.Comp);
     }
 
@@ -93,10 +95,11 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
                 continue;
             }
 
-            if ((comp.ReturningPairedSaber || comp.PairedSaberReturns is { Count: > 0 }) &&
+            var requiresOwnedAttraction = RequiresOwnedAttraction(comp);
+            if ((requiresOwnedAttraction || comp.PairedSaberReturns is { Count: > 0 }) &&
                 !_actionBlocker.CanInteract(uid, null))
             {
-                if (comp.ReturningPairedSaber)
+                if (requiresOwnedAttraction)
                     StopAttractingByForce(uid, comp);
                 comp.PairedSaberReturns?.Clear();
             }
@@ -114,8 +117,8 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
 
                 MapCoordinates usercords = _transformSystem.GetMapCoordinates(uid);
                 MapCoordinates targetcords = _transformSystem.GetMapCoordinates(comp.CurrentAttractingItem.Value);
-                if (comp.ReturningPairedSaber && (usercords.MapId != targetcords.MapId ||
-                    !OwnsAttraction(uid, comp.CurrentAttractingItem.Value)))
+                if (RequiresOwnedAttraction(comp) &&
+                    (usercords.MapId != targetcords.MapId || !OwnsAttraction(uid, comp.CurrentAttractingItem.Value)))
                 {
                     StopAttractingByForce(uid, comp);
                     continue;
@@ -133,8 +136,18 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
                     var returnSaber = TryComp<SWDoubleSaberThrowVisualComponent>(item, out var visual) &&
                                       visual.ReturnUser == uid;
                     var wasActive = returnSaber && _toggle.IsActivated(item);
+                    var inRange = (usercords.Position - targetcords.Position).Length() < SharedInteractionSystem.InteractionRange;
+                    if (comp.ReturningPoweredStaff)
+                    {
+                        if (inRange && visual != null && _saberThrows.TryBeginPoweredStaffCatch((item, visual), uid))
+                            CatchPoweredStaff(uid, (item, visual), comp);
+                        else
+                            StopAttractingByForce(uid, comp);
+                        continue;
+                    }
+
                     StopAttractingByForce(uid, comp);
-                    if ((usercords.Position - targetcords.Position).Length() >= SharedInteractionSystem.InteractionRange)
+                    if (!inRange)
                         continue;
 
                     if (returnPairedSaber)
@@ -152,6 +165,23 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
                     }
                 }
             }
+        }
+    }
+
+    private void CatchPoweredStaff(EntityUid user, Entity<SWDoubleSaberThrowVisualComponent> staff,
+        ForceAbilityDistanceInteractComponent attraction)
+    {
+        var regripped = false;
+        try
+        {
+            // Stop the attraction to unlock pickup. Keep power while pickup and regrip are in progress.
+            StopAttractingByForce(user, attraction);
+            regripped = _interactionSystem.InRangeUnobstructed(user, staff.Owner) &&
+                        _splitStaff.TryCatchPoweredStaff(user, staff.Owner);
+        }
+        finally
+        {
+            _saberThrows.FinishPoweredStaffCatch(staff, regripped);
         }
     }
 
@@ -221,8 +251,21 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
         }
     }
 
+    private bool RequiresOwnedAttraction(ForceAbilityDistanceInteractComponent comp) =>
+        comp.ReturningPairedSaber || comp.ReturningPoweredStaff ||
+        HasComp<SWSplitSaberStaffComponent>(comp.CurrentAttractingItem);
+
     private bool OwnsAttraction(EntityUid user, EntityUid item) =>
         TryComp<BeingAttractedByForceComponent>(item, out var attraction) && attraction.User == user;
+
+    internal void StartReturningStaffByForce(EntityUid user, EntityUid staff)
+    {
+        if (TryComp<BeingAttractedByForceComponent>(staff, out var attraction) &&
+            attraction.User is { } owner && owner != user)
+            return;
+
+        StartAttractingByForce(user, staff);
+    }
 
     public void StartAttractingByForce(EntityUid forceUser, EntityUid target, ForceAbilityDistanceInteractComponent? comp = null)
     {
@@ -240,16 +283,20 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
             return;
         }
 
-        if (comp.IsAttracting && comp.CurrentAttractingItem == target)
-            return;
+        if (!comp.IsAttracting || comp.CurrentAttractingItem != target)
+        {
+            if (comp.CurrentAttractingItem != null)
+                StopAttractingByForce(forceUser, comp);
 
-        if (comp.CurrentAttractingItem != null)
-            StopAttractingByForce(forceUser, comp);
+            comp.IsAttracting = true;
+            comp.CurrentAttractingItem = target;
+            EnsureComp<BeingAttractedByForceComponent>(target).User = forceUser;
+            EnsureComp<SWUnpickuppableComponent>(target);
+        }
 
-        comp.IsAttracting = true;
-        comp.CurrentAttractingItem = target;
-        EnsureComp<BeingAttractedByForceComponent>(target).User = forceUser;
-        EnsureComp<SWUnpickuppableComponent>(target);
+        if (TryComp<SWDoubleSaberThrowVisualComponent>(target, out var visual) &&
+            _saberThrows.IsPoweredStaffReturn((target, visual), forceUser) && OwnsAttraction(forceUser, target))
+            comp.ReturningPoweredStaff = true;
     }
 
     public void StopAttractingByForce(EntityUid user, ForceAbilityDistanceInteractComponent? comp = null)
@@ -269,11 +316,18 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
         }
 
         var item = comp.CurrentAttractingItem.Value;
-        var wasReturningPairedSaber = comp.ReturningPairedSaber;
+        var wasReturningPoweredStaff = comp.ReturningPoweredStaff;
+        var requiresOwnedAttraction = RequiresOwnedAttraction(comp);
         comp.IsAttracting = false;
         comp.CurrentAttractingItem = null;
         comp.ReturningPairedSaber = false;
-        if (TerminatingOrDeleted(item) || (wasReturningPairedSaber && !OwnsAttraction(user, item)))
+        comp.ReturningPoweredStaff = false;
+        if (TerminatingOrDeleted(item))
+            return;
+
+        if (wasReturningPoweredStaff)
+            _saberThrows.CancelPoweredStaffReturn(item, user);
+        if (requiresOwnedAttraction && !OwnsAttraction(user, item))
             return;
 
         _physicsSystem.SetLinearVelocity(item, Vector2.Zero);

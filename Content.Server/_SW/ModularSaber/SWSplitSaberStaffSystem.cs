@@ -350,6 +350,11 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         return true;
     }
 
+    internal bool TryCatchPoweredStaff(EntityUid user, EntityUid staff) =>
+        TryComp<WieldableComponent>(staff, out var wieldable) && !wieldable.Wielded &&
+        _hands.TryPickupAnyHand(user, staff) && TryWieldStaff(user, staff, wieldable) &&
+        _hands.IsHolding(user, staff) && _toggle.IsActivated(staff);
+
     private bool TryWieldStaff(EntityUid user, EntityUid staff, WieldableComponent wieldable)
     {
         if (!_hands.TryGetEmptyHand(user, out _))

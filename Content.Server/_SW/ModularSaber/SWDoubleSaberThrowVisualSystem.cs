@@ -1,3 +1,4 @@
+using Content.Server._SW.Unpickuppable;
 using Content.Shared._SW.ForceAbilities;
 using Content.Shared._SW.ModularSaber;
 using Content.Shared.Item.ItemToggle;
@@ -20,6 +21,7 @@ public sealed partial class SWDoubleSaberThrowVisualComponent : Component
     public bool ThrowSucceeded;
     public bool RestoredForFlight;
     public EntityUid? ReturnUser;
+    public bool CatchingPoweredStaff;
 }
 
 public sealed class SWDoubleSaberThrowVisualSystem : EntitySystem
@@ -78,8 +80,12 @@ public sealed class SWDoubleSaberThrowVisualSystem : EntitySystem
             return;
 
         ent.Comp.ThrowSucceeded = true;
-        ent.Comp.ReturnUser = args.User;
         ent.Comp.RestoredForFlight = ent.Comp.WasActive && ent.Comp.UnwieldedForThrow && _toggle.IsActivated(ent.Owner);
+        var splitStaff = HasComp<SWSplitSaberStaffComponent>(ent.Owner);
+        ent.Comp.ReturnUser = ent.Comp.RestoredForFlight || !splitStaff ? args.User : null;
+        if (splitStaff && HasComp<SWAbilityThrowSwordComponent>(args.User))
+            EnsureComp<SWUnpickuppableComponent>(ent.Owner);
+
         _appearance.SetData(ent.Owner, SWDoubleSaberThrowVisuals.Flying, false);
     }
 
@@ -101,20 +107,30 @@ public sealed class SWDoubleSaberThrowVisualSystem : EntitySystem
 
     private void OnLand(Entity<SWDoubleSaberThrowVisualComponent> ent, ref LandEvent args)
     {
-        if (!HasComp<BeingAttractedByForceComponent>(ent.Owner))
+        var splitStaff = HasComp<SWSplitSaberStaffComponent>(ent.Owner);
+        if (TryComp<BeingAttractedByForceComponent>(ent.Owner, out var attraction))
         {
-            ent.Comp.ReturnUser = null;
-            EndFlight(ent);
+            if (!splitStaff || attraction.User == ent.Comp.ReturnUser)
+                return;
         }
+        else if (splitStaff)
+        {
+            RemComp<SWUnpickuppableComponent>(ent.Owner);
+        }
+
+        ent.Comp.ReturnUser = null;
+        EndFlight(ent);
     }
 
     private void OnStopThrow(Entity<SWDoubleSaberThrowVisualComponent> ent, ref StopThrowEvent args)
     {
-        if (!HasComp<BeingAttractedByForceComponent>(ent.Owner))
-        {
-            ent.Comp.ReturnUser = null;
-            EndFlight(ent);
-        }
+        if (HasComp<BeingAttractedByForceComponent>(ent.Owner))
+            return;
+
+        if (HasComp<SWSplitSaberStaffComponent>(ent.Owner))
+            RemComp<SWUnpickuppableComponent>(ent.Owner);
+        ent.Comp.ReturnUser = null;
+        EndFlight(ent);
     }
 
     private void OnInserted(Entity<SWDoubleSaberThrowVisualComponent> ent, ref EntGotInsertedIntoContainerMessage args)
@@ -132,8 +148,42 @@ public sealed class SWDoubleSaberThrowVisualSystem : EntitySystem
         EndFlight((ent.Owner, visual));
     }
 
+    internal bool IsPoweredStaffReturn(Entity<SWDoubleSaberThrowVisualComponent> ent, EntityUid user) =>
+        ent.Comp.ReturnUser == user && ent.Comp.RestoredForFlight && HasComp<SWSplitSaberStaffComponent>(ent.Owner);
+
+    internal bool TryBeginPoweredStaffCatch(Entity<SWDoubleSaberThrowVisualComponent> ent, EntityUid user)
+    {
+        if (!IsPoweredStaffReturn(ent, user) || ent.Comp.CatchingPoweredStaff || !_toggle.IsActivated(ent.Owner))
+            return false;
+
+        ent.Comp.CatchingPoweredStaff = true;
+        return true;
+    }
+
+    internal void FinishPoweredStaffCatch(Entity<SWDoubleSaberThrowVisualComponent> ent, bool regripped)
+    {
+        ent.Comp.CatchingPoweredStaff = false;
+        ent.Comp.ReturnUser = null;
+        if (regripped)
+            ent.Comp.RestoredForFlight = false;
+        else if (!TerminatingOrDeleted(ent.Owner))
+            EndFlight(ent);
+    }
+
+    internal void CancelPoweredStaffReturn(EntityUid staff, EntityUid user)
+    {
+        if (!TryComp<SWDoubleSaberThrowVisualComponent>(staff, out var visual) || visual.ReturnUser != user)
+            return;
+
+        visual.ReturnUser = null;
+        EndFlight((staff, visual));
+    }
+
     private void EndFlight(Entity<SWDoubleSaberThrowVisualComponent> ent)
     {
+        if (ent.Comp.CatchingPoweredStaff)
+            return;
+
         _appearance.SetData(ent.Owner, SWDoubleSaberThrowVisuals.Flying, false);
         if (!ent.Comp.RestoredForFlight)
             return;

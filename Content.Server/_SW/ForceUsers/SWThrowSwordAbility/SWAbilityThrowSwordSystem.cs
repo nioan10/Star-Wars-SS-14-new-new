@@ -26,7 +26,7 @@ public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
 
     private void BeforeThrow(Entity<SWAbilityThrowSwordComponent> ent, ref BeforeThrowEvent args)
     {
-        if (HasComp<SWSwordThrowableComponent>(args.ItemUid))
+        if (HasComp<SWSwordThrowableComponent>(args.ItemUid) && !HasComp<SWSplitSaberStaffComponent>(args.ItemUid))
         {
             //We do it to avoid
             //that someone can catch sword while it is throwed
@@ -53,6 +53,10 @@ public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
             if (!TryComp<BeingAttractedByForceComponent>(ent.Owner, out var attraction) || attraction.User == null)
                 RemComp<SWUnpickuppableComponent>(ent);
             _force.EnqueuePairedSaberReturn(args.User.Value, ent.Owner, half.ReturnGeneration);
+        }
+        else if (HasComp<SWSplitSaberStaffComponent>(ent.Owner))
+        {
+            _force.StartReturningStaffByForce(args.User.Value, ent.Owner);
         }
         else
         {
