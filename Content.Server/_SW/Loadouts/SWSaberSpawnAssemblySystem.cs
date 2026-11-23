@@ -23,6 +23,7 @@ public sealed class SWSaberSpawnAssemblySystem : EntitySystem
     [Dependency] private readonly SharedHandsSystem _hands = default!;
     [Dependency] private readonly SharedContainerSystem _containers = default!;
     [Dependency] private readonly SharedTransformSystem _transform = default!;
+    [Dependency] private readonly SWSplitSaberStaffSystem _staff = default!;
 
     public override void Initialize()
     {
@@ -46,7 +47,8 @@ public sealed class SWSaberSpawnAssemblySystem : EntitySystem
         EntProtoId hilt = default;
         foreach (var (slot, prototype) in kit.Equipment)
         {
-            if (!HasPrototypeComponent<SWModularSaberComponent>(prototype) ||
+            if ((!HasPrototypeComponent<SWModularSaberComponent>(prototype) &&
+                 !HasPrototypeComponent<SWSplitSaberStaffComponent>(prototype)) ||
                 !args.Gear.Equipment.TryGetValue(slot, out var equipped) || equipped != prototype)
                 continue;
             hiltSlot = slot;
@@ -74,51 +76,68 @@ public sealed class SWSaberSpawnAssemblySystem : EntitySystem
         var crystal = Take<SWSaberCrystalComponent>(kit, gear);
         var focus = Take<SWSaberFocusComponent>(kit, gear);
         // Never synthesize free parts when the configured kit is incomplete.
-        if (emitter == null || crystal == null || focus == null)
+        if (emitter is not { } emitterId || crystal is not { } crystalId || focus is not { } focusId)
             return;
 
         // Build temporary entities on the map. On any failure the original snapshot remains intact.
         var coordinates = _transform.GetMapCoordinates(entity);
-        EntityUid? saber = null;
-        EntityUid? crystalEntity = null;
-        EntityUid? emitterEntity = null;
-        EntityUid? focusEntity = null;
+        var created = new List<EntityUid>();
         var assembled = false;
         try
         {
-            saber = Spawn(hilt, coordinates);
-            crystalEntity = Spawn(crystal.Value, coordinates);
-            emitterEntity = Spawn(emitter.Value, coordinates);
-            focusEntity = Spawn(focus.Value, coordinates);
-            if (!TryComp<SWModularSaberComponent>(saber.Value, out var modular) ||
-                modular.Crystal?.ContainerSlot is not { } crystalSlot ||
-                modular.Emitter?.ContainerSlot is not { } emitterSlot ||
-                modular.Focus?.ContainerSlot is not { } focusSlot ||
-                !FitsSlot(crystalEntity.Value, modular.Crystal) ||
-                !_containers.Insert(crystalEntity.Value, crystalSlot) ||
-                !FitsSlot(emitterEntity.Value, modular.Emitter) ||
-                !_containers.Insert(emitterEntity.Value, emitterSlot) ||
-                !FitsSlot(focusEntity.Value, modular.Focus) ||
-                !_containers.Insert(focusEntity.Value, focusSlot))
+            var saber = SpawnForAssembly(hilt);
+            if (TryComp<SWSplitSaberStaffComponent>(saber, out var staff))
+            {
+                var lead = SpawnForAssembly(staff.HalfPrototype);
+                var tail = SpawnForAssembly(staff.HalfPrototype);
+                // The selected kit determines both sets; the one-shot assembly creates each physical part once.
+                if (!TryFill(lead) || !TryFill(tail) || !_staff.TryInitialize((saber, staff), lead, tail))
+                    return;
+            }
+            else if (!TryFill(saber))
+            {
                 return;
+            }
 
+            // The snapshot is committed only after the entire assembly succeeds.
+            args.Gear = gear;
+            args.Saber = saber;
             assembled = true;
         }
         finally
         {
             if (!assembled)
             {
-                // Delete parts first: deleting the hilt would otherwise release inserted parts.
-                if (crystalEntity is { } crystalUid) Del(crystalUid);
-                if (emitterEntity is { } emitterUid) Del(emitterUid);
-                if (focusEntity is { } focusUid) Del(focusUid);
-                if (saber is { } saberUid) Del(saberUid);
+                // Delete inserted parts and halves before their containers.
+                for (var i = created.Count - 1; i >= 0; i--)
+                    Del(created[i]);
             }
         }
 
-        // The snapshot is private to this equip call; it is committed only after assembly succeeds.
-        args.Gear = gear;
-        args.Saber = saber;
+        EntityUid SpawnForAssembly(EntProtoId prototype)
+        {
+            var spawned = Spawn(prototype, coordinates);
+            created.Add(spawned);
+            return spawned;
+        }
+
+        bool TryFill(EntityUid saber)
+        {
+            if (!TryComp<SWModularSaberComponent>(saber, out var modular) ||
+                modular.Crystal?.ContainerSlot == null || modular.Emitter?.ContainerSlot == null ||
+                modular.Focus?.ContainerSlot == null)
+                return false;
+
+            return TryInsertPart(crystalId, modular.Crystal) &&
+                   TryInsertPart(emitterId, modular.Emitter) &&
+                   TryInsertPart(focusId, modular.Focus);
+        }
+
+        bool TryInsertPart(EntProtoId prototype, ItemSlot slot)
+        {
+            var part = SpawnForAssembly(prototype);
+            return FitsSlot(part, slot) && _containers.Insert(part, slot.ContainerSlot!);
+        }
     }
 
     private void OnComplete(Entity<InventoryComponent> entity, ref CompleteStartingSaberEvent args)

@@ -7,6 +7,16 @@ ent-SWModularSaber = modular lightsaber hilt
     .desc = A modular hilt for a single blade. The saber can be used one-handed.
 ent-SWModularSaberDouble = double-bladed modular lightsaber hilt
     .desc = A modular hilt for two blades. The saber requires both hands.
+ent-SWModularSaberStaff = split lightsaber staff
+    .desc = A two-handed staff that separates into two one-handed modular lightsabers. When joined, the leading hilt sets the color and the staff deals 5 extra slash damage.
+ent-SWModularSaberStaffHalf = split lightsaber staff half
+    .desc = A one-handed modular lightsaber. Hold both matching hilts while their blades are off to join the staff.
+sw-split-saber-staff-separate = Separate lightsabers
+sw-split-saber-staff-join = Join into staff
+sw-split-saber-staff-separate-failed = Turn off the staff, release the two-handed grip, and free a hand to separate it.
+sw-split-saber-staff-join-failed = Hold both matching, fully assembled hilts with their blades off to join the staff.
+sw-split-saber-staff-incomplete = The staff needs both fully assembled hilts and a two-handed grip.
+
 ent-SWSaberEmitterStandard = standard lightsaber emitter
     .desc = A standard emitter for a modular lightsaber.
 ent-SWSaberEmitterReinforced = reinforced lightsaber emitter

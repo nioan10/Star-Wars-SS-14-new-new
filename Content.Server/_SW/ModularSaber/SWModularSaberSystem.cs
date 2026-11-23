@@ -3,6 +3,7 @@ using Content.Shared.ActionBlocker;
 using Content.Shared.Hands.EntitySystems;
 using Content.Shared.Interaction;
 using Content.Shared.Verbs;
+using Content.Shared.Damage;
 using Content.Shared.Destructible;
 using Content.Shared.Containers.ItemSlots;
 using Content.Shared.Weapons.Melee;
@@ -204,40 +205,69 @@ public sealed class SWModularSaberSystem : EntitySystem
 
     private void OnActivateAttempt(Entity<SWModularSaberComponent> ent, ref ItemToggleActivateAttemptEvent args)
     {
-        if (ent.Comp.Crystal?.Item is not { } crystal || !TryComp<SWSaberCrystalComponent>(crystal, out var color) ||
-            ent.Comp.Emitter?.Item is not { } emitter || !TryComp<SWSaberEmitterComponent>(emitter, out var emitterComp) ||
-            ent.Comp.Focus?.Item is not { } focus || !TryComp<SWSaberFocusComponent>(focus, out var focusComp))
+        if (!TryGetAssembly(ent.Owner, out var parts))
         {
             args.Cancelled = true;
             args.Popup = Loc.GetString("sw-modular-saber-incomplete");
             return;
         }
 
-        if (!TryComp<ItemToggleMeleeWeaponComponent>(ent, out var toggleMelee))
-        {
+        if (!TryApplyAssembly(parts, ent.Owner))
             args.Cancelled = true;
-            return;
-        }
-
-        var damage = emitterComp.Damage * focusComp.DamageMultiplier;
-        if (emitterComp.Damage.DamageDict.TryGetValue("Structural", out var structural))
-            damage.DamageDict["Structural"] = structural;
-        toggleMelee.ActivatedDamage = damage;
-        Dirty(ent, toggleMelee);
-        if (TryComp<AppearanceComponent>(ent, out var appearance))
-            _appearance.SetData(ent, ToggleableVisuals.Color, color.Color, appearance);
     }
 
-    private void OnToggled(Entity<SWModularSaberComponent> ent, ref ItemToggledEvent args)
+    private bool TryGetAssembly(EntityUid saber,
+        out (SWSaberCrystalComponent Crystal, SWSaberEmitterComponent Emitter, SWSaberFocusComponent Focus) parts)
     {
-        if (!TryComp<MeleeWeaponComponent>(ent, out var melee))
+        parts = default;
+        if (!TryComp<SWModularSaberComponent>(saber, out var slots) ||
+            slots.Crystal?.Item is not { } crystal || !TryComp<SWSaberCrystalComponent>(crystal, out var color) ||
+            slots.Emitter?.Item is not { } emitter || !TryComp<SWSaberEmitterComponent>(emitter, out var emitterComp) ||
+            slots.Focus?.Item is not { } focus || !TryComp<SWSaberFocusComponent>(focus, out var focusComp))
+            return false;
+
+        parts = (color, emitterComp, focusComp);
+        return true;
+    }
+
+    internal bool HasCompleteAssembly(EntityUid saber) => TryGetAssembly(saber, out _);
+
+    internal bool TryApplyAssembly(EntityUid saber, EntityUid weapon, DamageSpecifier? bonus = null) =>
+        TryGetAssembly(saber, out var parts) && TryApplyAssembly(parts, weapon, bonus);
+
+    private bool TryApplyAssembly(
+        (SWSaberCrystalComponent Crystal, SWSaberEmitterComponent Emitter, SWSaberFocusComponent Focus) parts,
+        EntityUid weapon,
+        DamageSpecifier? bonus = null)
+    {
+        if (!TryComp<ItemToggleMeleeWeaponComponent>(weapon, out var toggleMelee))
+            return false;
+
+        var damage = parts.Emitter.Damage * parts.Focus.DamageMultiplier;
+        if (bonus != null)
+            damage += bonus;
+        if (parts.Emitter.Damage.DamageDict.TryGetValue("Structural", out var structural))
+            damage.DamageDict["Structural"] = structural;
+        toggleMelee.ActivatedDamage = damage;
+        Dirty(weapon, toggleMelee);
+        if (TryComp<AppearanceComponent>(weapon, out var appearance))
+            _appearance.SetData(weapon, ToggleableVisuals.Color, parts.Crystal.Color, appearance);
+        return true;
+    }
+
+    private void OnToggled(Entity<SWModularSaberComponent> ent, ref ItemToggledEvent args) =>
+        UpdateAttackRate(ent.Owner, args.Activated ? ent.Owner : null);
+
+    internal void UpdateAttackRate(EntityUid weapon, EntityUid? saber)
+    {
+        if (!TryComp<MeleeWeaponComponent>(weapon, out var melee))
             return;
 
-        melee.AttackRate = args.Activated && ent.Comp.Focus?.Item is { } focus &&
-                           TryComp<SWSaberFocusComponent>(focus, out var focusComp)
+        melee.AttackRate = TryComp<SWModularSaberComponent>(saber, out var slots) &&
+                           slots.Focus?.Item is { } focus && TryComp<SWSaberFocusComponent>(focus, out var focusComp)
             ? focusComp.AttackRateMultiplier
             : 1f;
-        DirtyField(ent, melee, nameof(MeleeWeaponComponent.AttackRate));
+        DirtyField(weapon, melee, nameof(MeleeWeaponComponent.AttackRate));
     }
 
     private void OnContainerRemoved(Entity<SWModularSaberComponent> ent, ref EntRemovedFromContainerMessage args)

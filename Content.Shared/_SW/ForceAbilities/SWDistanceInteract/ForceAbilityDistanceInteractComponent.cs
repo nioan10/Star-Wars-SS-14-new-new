@@ -16,6 +16,8 @@ public sealed partial class ForceAbilityDistanceInteractComponent : Component
     public float AttractByForceSpeed = 12f;
     public EntityUid? CurrentAttractingItem;
     public bool IsAttracting = false;
+    public bool ReturningPairedSaber;
+    public Queue<(EntityUid Item, uint Generation)>? PairedSaberReturns;
     [DataField]
     public string ActionAttractPrototype = "ActionForceAttract";
 

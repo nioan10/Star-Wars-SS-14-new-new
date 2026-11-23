@@ -2,9 +2,12 @@ using Content.Shared.Actions;
 using Content.Shared.Throwing;
 using Robust.Shared.Physics.Systems;
 using Content.Shared._SW;
+using Content.Shared._SW.ForceAbilities;
 using Content.Server.Hands.Systems;
 using Content.Shared.Item;
+using Content.Server._SW.ModularSaber;
 using Content.Server._SW.Unpickuppable;
+using Robust.Shared.Containers;
 
 namespace Content.Server._SW;
 
@@ -17,6 +20,8 @@ public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
         base.Initialize();
         SubscribeLocalEvent<SWAbilityThrowSwordComponent, BeforeThrowEvent>(BeforeThrow);
         SubscribeLocalEvent<SWSwordThrowableComponent, LandEvent>(OnLand);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, ThrownEvent>(OnPairedSaberThrown);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, EntGotInsertedIntoContainerMessage>(OnPairedSaberInserted);
     }
 
     private void BeforeThrow(Entity<SWAbilityThrowSwordComponent> ent, ref BeforeThrowEvent args)
@@ -29,14 +34,31 @@ public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
         }
     }
 
+    private void OnPairedSaberThrown(Entity<SWSplitSaberHalfComponent> ent, ref ThrownEvent args) =>
+        ent.Comp.ReturnGeneration++;
+
+    private void OnPairedSaberInserted(Entity<SWSplitSaberHalfComponent> ent, ref EntGotInsertedIntoContainerMessage args) =>
+        ent.Comp.ReturnGeneration++;
+
     private void OnLand(Entity<SWSwordThrowableComponent> ent, ref LandEvent args)
     {
         if (args.User == null)
         {
             return;
         }
-        RemComp<SWUnpickuppableComponent>(ent);
-        _force.StartAttractingByForce(args.User.Value, ent.Owner);
+        if (TryComp<SWSplitSaberHalfComponent>(ent.Owner, out var half) && half.Staff is { } staff &&
+            !TerminatingOrDeleted(staff))
+        {
+            // Release the flight lock while queued. An ongoing attraction owns its own lock.
+            if (!TryComp<BeingAttractedByForceComponent>(ent.Owner, out var attraction) || attraction.User == null)
+                RemComp<SWUnpickuppableComponent>(ent);
+            _force.EnqueuePairedSaberReturn(args.User.Value, ent.Owner, half.ReturnGeneration);
+        }
+        else
+        {
+            RemComp<SWUnpickuppableComponent>(ent);
+            _force.StartAttractingByForce(args.User.Value, ent.Owner);
+        }
         _physicsSystem.ApplyAngularImpulse(ent.Owner, 2f);
     }
 }

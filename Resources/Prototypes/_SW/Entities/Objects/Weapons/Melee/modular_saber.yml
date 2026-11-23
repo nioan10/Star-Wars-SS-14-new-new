@@ -75,6 +75,53 @@
     sprite: Objects/Weapons/Melee/e_sword_double-inhands.rsi
 
 - type: entity
+  parent: SWEnergySwordBase
+  id: SWModularSaberStaff
+  name: split lightsaber staff
+  description: A two-handed lightsaber staff that separates into two paired modular lightsabers.
+  components:
+  - type: SWSplitSaberStaff
+    halfPrototype: SWModularSaberStaffHalf
+    joinedDamageBonus:
+      types:
+        Slash: 5
+  - type: ContainerContainer
+    containers:
+      staff-lead: !type:ContainerSlot {}
+      staff-tail: !type:ContainerSlot {}
+  - type: Wieldable
+    wieldSound: null
+  - type: ItemToggle
+    onUse: false
+    onActivate: false
+    predictable: false
+  - type: EnergySword
+    colorOptions: []
+  - type: Sprite
+    sprite: Objects/Weapons/Melee/e_sword_double.rsi
+    layers:
+    - state: e_sword_double
+    - state: e_sword_double_blade
+      color: "#FFFFFF"
+      visible: false
+      shader: unshaded
+      map: [ "blade" ]
+  - type: Item
+    sprite: Objects/Weapons/Melee/e_sword_double-inhands.rsi
+
+- type: entity
+  parent: SWModularSaber
+  id: SWModularSaberStaffHalf
+  name: split lightsaber staff half
+  description: A one-handed modular lightsaber that joins its matching half.
+  categories: [ HideSpawnMenu ]
+  components:
+  - type: SWSplitSaberHalf
+  - type: ContainerContainer
+    containers:
+      staff-frame: !type:ContainerSlot {}
+
+- type: entity
   parent: BaseItem
   id: SWSaberEmitterStandard
   name: standard lightsaber emitter
