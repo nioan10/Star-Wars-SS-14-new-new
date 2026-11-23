@@ -165,7 +165,7 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         }
     }
 
-    private static string PartVerbText(string verb, bool leading, string part) =>
+    private string PartVerbText(string verb, bool leading, string part) =>
         Loc.GetString(verb,
             ("half", Loc.GetString(leading ? "sw-split-saber-staff-leading" : "sw-split-saber-staff-trailing")),
             ("part", Loc.GetString(part)));
