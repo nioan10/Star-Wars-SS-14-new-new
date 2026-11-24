@@ -1,4 +1,5 @@
 using System;
+using Content.Shared._SW.ModularSaber;
 using Content.Shared.Hands;
 using Content.Shared.Hands.EntitySystems;
 using Content.Shared.Item.ItemToggle;
@@ -54,9 +55,19 @@ public abstract class SWSharedMeleeWeaponSystem : EntitySystem
                 continue;
             }
 
+            var splitSaber = HasComp<SWSplitSaberFamilyComponent>(blockWeapon.Owner);
+            if (splitSaber && (args.Handled || blockWeapon.Comp.BlockEndTime <= _gameTiming.CurTime ||
+                              !_toggle.IsActivated(blockWeapon.Owner) || !_hands.IsHolding(entity, blockWeapon.Owner)))
+                continue;
+
             args.Handled = true;
             PopupSystem.PopupPredicted(Loc.GetString(HitBlockedPopup), ent.Owner, null, PopupType.Medium);
             DisableBlock(blockWeapon);
+            if (splitSaber)
+            {
+                var blocked = new SWMeleeBlockedEvent(entity);
+                RaiseLocalEvent(blockWeapon.Owner, ref blocked);
+            }
             break;
         }
     }
@@ -84,6 +95,24 @@ public abstract class SWSharedMeleeWeaponSystem : EntitySystem
     {
         if (ent.Comp.IsBlocking)
             DisableBlock(ent);
+    }
+
+    public void LowerBlock(EntityUid weapon)
+    {
+        if (TryComp<SWWeaponBlockComponent>(weapon, out var block))
+            DisableBlock((weapon, block));
+    }
+
+    public void ClampBlockToBaseDuration(EntityUid weapon)
+    {
+        if (!TryComp<SWWeaponBlockComponent>(weapon, out var block) || !block.IsBlocking)
+            return;
+
+        var baseEnd = block.BlockStartTime + TimeSpan.FromSeconds(block.BlockDuration);
+        if (block.BlockEndTime > baseEnd)
+            block.BlockEndTime = baseEnd;
+        if (block.BlockEndTime <= _gameTiming.CurTime)
+            DisableBlock((weapon, block));
     }
 
     private void DisableBlock(Entity<SWWeaponBlockComponent> ent)
@@ -141,7 +170,11 @@ public abstract class SWSharedMeleeWeaponSystem : EntitySystem
         PopupSystem.PopupPredicted(Loc.GetString(RaiseBlockPopup), weapon.Comp.CurrentUser ?? weapon.Owner, null, PopupType.Medium);
         EnableProjectileReflection(weapon);
         weapon.Comp.IsBlocking = true;
-        weapon.Comp.BlockEndTime = _gameTiming.CurTime + TimeSpan.FromSeconds(weapon.Comp.BlockDuration);
+        var duration = new SWGetBlockDurationEvent(weapon.Comp.BlockDuration);
+        if (HasComp<SWSplitSaberFamilyComponent>(weapon.Owner))
+            RaiseLocalEvent(weapon.Owner, ref duration);
+        weapon.Comp.BlockStartTime = _gameTiming.CurTime;
+        weapon.Comp.BlockEndTime = weapon.Comp.BlockStartTime + TimeSpan.FromSeconds(duration.Seconds);
     }
 
     private void OnLightningHit(Entity<SWForceUserBlockComponent> ent, ref HitByLightningEvent args)
@@ -223,6 +256,12 @@ public abstract class SWSharedMeleeWeaponSystem : EntitySystem
         return false;
     }
 }
+
+[ByRefEvent]
+public record struct SWGetBlockDurationEvent(float Seconds);
+
+[ByRefEvent]
+public readonly record struct SWMeleeBlockedEvent(EntityUid Defender);
 
 [Serializable, NetSerializable]
 public sealed class SWTryReflectEvent : EntityEventArgs

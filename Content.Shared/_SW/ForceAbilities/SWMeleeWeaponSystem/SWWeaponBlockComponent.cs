@@ -25,6 +25,7 @@ public sealed partial class SWWeaponBlockComponent : Component
     [DataField]
     public float BlockDuration = 5f;
 
+    public TimeSpan BlockStartTime;
     public TimeSpan BlockEndTime;
 
     [DataField]

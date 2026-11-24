@@ -32,6 +32,10 @@ public sealed partial class ItemToggleComponent : Component
     [DataField]
     public bool OnUse = true;
 
+    /// <summary>Whether releasing a wielded grip automatically deactivates the item.</summary>
+    [DataField]
+    public bool OffOnUnwield = true;
+
     /// <summary>
     ///     The localized text to display in the verb to activate.
     /// </summary>

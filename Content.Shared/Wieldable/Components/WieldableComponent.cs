@@ -23,6 +23,10 @@ public sealed partial class WieldableComponent : Component
     [DataField("freeHandsRequired")]
     public int FreeHandsRequired = 1;
 
+    /// <summary>Whether wielding may release another held item to make space.</summary>
+    [DataField]
+    public bool DropItemsOnWield = true;
+
     [AutoNetworkedField, DataField("wielded")]
     public bool Wielded = false;
 

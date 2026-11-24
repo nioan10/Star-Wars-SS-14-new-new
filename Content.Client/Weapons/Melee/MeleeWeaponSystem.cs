@@ -89,7 +89,7 @@ public sealed partial class MeleeWeaponSystem : SharedMeleeWeaponSystem
             }
         }
 
-        if (weapon.Attacking || (weapon.NextAttack > Timing.CurTime))
+        if (weapon.Attacking || IsAttackCoolingDown(entity, weaponUid, weapon))
         {
             return;
         }

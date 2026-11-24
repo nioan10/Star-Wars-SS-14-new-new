@@ -3,6 +3,7 @@ using Content.Shared._SW.ModularSaber;
 using Content.Shared.Hands;
 using Content.Shared.Hands.Components;
 using Content.Shared.Toggleable;
+using Content.Shared.Wieldable.Components;
 using Robust.Client.GameObjects;
 
 namespace Content.Client._SW.ModularSaber;
@@ -37,18 +38,28 @@ public sealed class SWSplitSaberStaffVisualsSystem : VisualizerSystem<SWSplitSab
 
     private void OnGetHeldVisuals(EntityUid uid, SWSplitSaberStaffVisualsComponent component, GetInhandVisualsEvent args)
     {
-        if (!TryComp<AppearanceComponent>(uid, out var appearance) || !TryGetTailColor(uid, appearance, out var color))
+        if (!TryComp<AppearanceComponent>(uid, out var appearance) ||
+            !TryGetTailColor(uid, appearance, out var tailColor) ||
+            !AppearanceSystem.TryGetData<Color>(uid, ToggleableVisuals.Color, out var leadColor, appearance))
             return;
 
-        var state = args.Location switch
+        var hand = args.Location switch
         {
-            HandLocation.Left => "inhand-left-tail",
-            HandLocation.Right => "inhand-right-tail",
+            HandLocation.Left => "left",
+            HandLocation.Right => "right",
             _ => null,
         };
-        if (state == null)
+        if (hand == null)
             return;
 
+        var wielded = AppearanceSystem.TryGetData<bool>(uid, WieldableVisuals.Wielded, out var grip, appearance) && grip;
+        var prefix = wielded ? "inhand" : "onehand";
+        AddBlade(args, $"{prefix}-{hand}-lead", leadColor);
+        AddBlade(args, $"{prefix}-{hand}-tail", tailColor);
+    }
+
+    private static void AddBlade(GetInhandVisualsEvent args, string state, Color color)
+    {
         args.Layers.Add((state, new PrototypeLayerData
         {
             RsiPath = InhandRsi,

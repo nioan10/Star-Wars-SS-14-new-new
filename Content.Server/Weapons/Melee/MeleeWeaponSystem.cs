@@ -1,3 +1,4 @@
+using Content.Server._SW.ModularSaber;
 using Content.Server.Chat.Systems;
 using Content.Server.Movement.Systems;
 using Content.Shared.Chat;
@@ -16,6 +17,7 @@ public sealed class MeleeWeaponSystem : SharedMeleeWeaponSystem
 {
     [Dependency] private readonly ChatSystem _chat = default!;
     [Dependency] private readonly LagCompensationSystem _lag = default!;
+    [Dependency] private readonly EntityLookupSystem _lookup = default!;
     [Dependency] private readonly SharedColorFlashEffectSystem _color = default!;
 
     public override void Initialize()
@@ -26,6 +28,7 @@ public sealed class MeleeWeaponSystem : SharedMeleeWeaponSystem
     }
 
     protected override bool ArcRaySuccessful(EntityUid targetUid,
+        EntityUid weapon,
         Vector2 position,
         Angle angle,
         Angle arcWidth,
@@ -44,14 +47,28 @@ public sealed class MeleeWeaponSystem : SharedMeleeWeaponSystem
         // A) Wide-damage is split anyway
         // B) We run the same validation we do for click attacks.
 
-        // Could also check the arc though future effort + if they're aimbotting it's not really going to make a difference.
+        if (!HasComp<SWSplitSaberStaffComponent>(weapon))
+            return Interaction.InRangeUnobstructed(ignore, targetUid, range + 0.1f, overlapCheck: false);
 
-        // (This runs lagcomp internally and is what clickattacks use)
-        if (!Interaction.InRangeUnobstructed(ignore, targetUid, range + 0.1f, overlapCheck: false))
+        if (!TryComp<TransformComponent>(targetUid, out var targetTransform))
             return false;
 
-        // TODO: Check arc though due to the aforementioned aimbot + damage split comments it's less important.
-        return true;
+        var (coordinates, rotation) = _lag.GetCoordinatesAngle(targetUid, session, targetTransform);
+        var target = TransformSystem.ToMapCoordinates(coordinates);
+        if (target.MapId != mapId)
+            return false;
+
+        // Allow a ray to touch the edge of a lag-compensated bound at the edge of the cone.
+        var worldRotation = TransformSystem.GetWorldRotation(coordinates.EntityId) + rotation;
+        var bounds = _lookup.GetAABBNoContainer(targetUid, target.Position, worldRotation);
+        var offset = bounds.Center - position;
+        var distance = offset.Length();
+        var radius = bounds.Size.Length() / 2;
+        if (distance > radius &&
+            Math.Abs(Angle.ShortestDistance(angle, offset.ToWorldAngle()).Theta) > arcWidth.Theta / 2 + Math.Asin(radius / distance))
+            return false;
+
+        return Interaction.InRangeUnobstructed(ignore, targetUid, coordinates, rotation, range + 0.1f, overlapCheck: false);
     }
 
     protected override bool InRange(EntityUid user, EntityUid target, float range, ICommonSession? session)

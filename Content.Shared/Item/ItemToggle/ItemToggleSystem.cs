@@ -306,7 +306,8 @@ public sealed class ItemToggleSystem : EntitySystem
     /// </summary>
     private void TurnOffOnUnwielded(Entity<ItemToggleComponent> ent, ref ItemUnwieldedEvent args)
     {
-        TryDeactivate((ent, ent.Comp), args.User);
+        if (ent.Comp.OffOnUnwield)
+            TryDeactivate((ent, ent.Comp), args.User);
     }
 
     /// <summary>

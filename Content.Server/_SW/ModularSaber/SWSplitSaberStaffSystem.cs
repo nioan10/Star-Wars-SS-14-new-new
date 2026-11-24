@@ -1,15 +1,22 @@
 using System.Diagnostics.CodeAnalysis;
+using Content.Server._SW.Force.Systems;
+using Content.Server.Wieldable;
+using Content.Shared._SW.ForceAbilities.SWMeleeWeaponSystem;
 using Content.Shared._SW.ModularSaber;
 using Content.Shared.ActionBlocker;
+using Content.Shared.Hands;
 using Content.Shared.Hands.EntitySystems;
 using Content.Shared.Inventory.VirtualItem;
 using Content.Shared.Item.ItemToggle;
 using Content.Shared.Item.ItemToggle.Components;
 using Content.Shared.Popups;
+using Content.Shared.Throwing;
 using Content.Shared.Verbs;
 using Content.Shared.Wieldable;
 using Content.Shared.Wieldable.Components;
+using Content.Shared.Weapons.Melee;
 using Robust.Shared.Containers;
+using Robust.Shared.Timing;
 
 namespace Content.Server._SW.ModularSaber;
 
@@ -27,6 +34,10 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     [Dependency] private readonly ItemToggleSystem _toggle = default!;
     [Dependency] private readonly SharedWieldableSystem _wieldable = default!;
     [Dependency] private readonly SWModularSaberSystem _modular = default!;
+    [Dependency] private readonly SWMeleeWeaponSystem _block = default!;
+    [Dependency] private readonly SWDoubleSaberThrowVisualSystem _throws = default!;
+    [Dependency] private readonly SWSplitSaberCombatSystem _combat = default!;
+    [Dependency] private readonly IGameTiming _timing = default!;
 
     [Dependency] private readonly SharedAppearanceSystem _appearance = default!;
 
@@ -53,11 +64,23 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     public override void Initialize()
     {
         base.Initialize();
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, ComponentStartup>(OnStartup);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, ComponentStartup>(OnHalfStartup);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, GetVerbsEvent<AlternativeVerb>>(OnStaffVerbs);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, GetVerbsEvent<InteractionVerb>>(OnInsertVerbs);
         SubscribeLocalEvent<SWSplitSaberHalfComponent, GetVerbsEvent<AlternativeVerb>>(OnHalfVerbs);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemToggleActivateAttemptEvent>(OnActivate);
         SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemToggledEvent>(OnToggled);
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemWieldedEvent>(OnWielded);
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, ItemUnwieldedEvent>(OnUnwielded,
+            after: [typeof(WieldableSystem)]);
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, GotUnequippedHandEvent>(OnUnequipped);
+        SubscribeLocalEvent<SWSplitSaberStaffComponent, SWGetBlockDurationEvent>(OnGetBlockDuration);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, SWMeleeBlockedEvent>(OnHalfBlocked);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, SWSplitSaberCounterDamageEvent>(OnCounterDamage);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, ItemToggledEvent>(OnHalfToggled);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, GotUnequippedHandEvent>(OnHalfUnequipped);
+        SubscribeLocalEvent<SWSplitSaberHalfComponent, ThrownEvent>(OnHalfThrown);
     }
 
     internal bool TryInitialize(Entity<SWSplitSaberStaffComponent> staff, EntityUid lead, EntityUid tail)
@@ -72,16 +95,42 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         staff.Comp.Tail = tail;
         leadHalf.Staff = staff.Owner;
         tailHalf.Staff = staff.Owner;
-        return TryGetPair(staff, out var pair) && PutTogether(pair, restoring: false);
+        if (!TryGetPair(staff, out var pair) || !PutTogether(pair, restoring: false))
+            return false;
+
+        _combat.LinkMember(staff.Owner, staff.Owner);
+        _combat.LinkMember(lead, staff.Owner);
+        _combat.LinkMember(tail, staff.Owner);
+        return true;
+    }
+
+    private void OnStartup(Entity<SWSplitSaberStaffComponent> staff, ref ComponentStartup args)
+    {
+        // On load, assign only this entity's runtime network marker after its replication ticks have been reset.
+        if (TryGetLinkedHalves(staff, out _, out _))
+            _combat.LinkMember(staff.Owner, staff.Owner);
+    }
+
+    private void OnHalfStartup(Entity<SWSplitSaberHalfComponent> half, ref ComponentStartup args)
+    {
+        if (TryGetPairStaff(half, out var staffUid, out var staff) &&
+            TryGetLinkedHalves((staffUid, staff), out _, out _))
+            _combat.LinkMember(half.Owner, staffUid);
+    }
+
+    private bool TryGetLinkedHalves(Entity<SWSplitSaberStaffComponent> staff, out EntityUid lead, out EntityUid tail)
+    {
+        lead = staff.Comp.Lead ?? EntityUid.Invalid;
+        tail = staff.Comp.Tail ?? EntityUid.Invalid;
+        return lead != tail && !TerminatingOrDeleted(staff.Owner) && !TerminatingOrDeleted(lead) && !TerminatingOrDeleted(tail) &&
+               TryComp<SWSplitSaberHalfComponent>(lead, out var leadHalf) && leadHalf.Staff == staff.Owner &&
+               TryComp<SWSplitSaberHalfComponent>(tail, out var tailHalf) && tailHalf.Staff == staff.Owner;
     }
 
     private bool TryGetPair(Entity<SWSplitSaberStaffComponent> staff, out Pair pair)
     {
         pair = default;
-        if (staff.Comp.Lead is not { } lead || staff.Comp.Tail is not { } tail ||
-            lead == tail || TerminatingOrDeleted(staff.Owner) || TerminatingOrDeleted(lead) || TerminatingOrDeleted(tail) ||
-            !TryComp<SWSplitSaberHalfComponent>(lead, out var leadHalf) || leadHalf.Staff != staff.Owner ||
-            !TryComp<SWSplitSaberHalfComponent>(tail, out var tailHalf) || tailHalf.Staff != staff.Owner ||
+        if (!TryGetLinkedHalves(staff, out var lead, out var tail) ||
             !_containers.TryGetContainer(staff.Owner, LeadContainer, out var leadContainer) || leadContainer is not ContainerSlot leadSlot ||
             !_containers.TryGetContainer(staff.Owner, TailContainer, out var tailContainer) || tailContainer is not ContainerSlot tailSlot ||
             !_containers.TryGetContainer(lead, FrameContainer, out var frameContainer) || frameContainer is not ContainerSlot frameSlot)
@@ -350,10 +399,17 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         return true;
     }
 
-    internal bool TryCatchPoweredStaff(EntityUid user, EntityUid staff) =>
-        TryComp<WieldableComponent>(staff, out var wieldable) && !wieldable.Wielded &&
-        _hands.TryPickupAnyHand(user, staff) && TryWieldStaff(user, staff, wieldable) &&
-        _hands.IsHolding(user, staff) && _toggle.IsActivated(staff);
+    internal bool TryCatchPoweredStaff(EntityUid user, EntityUid staff, bool restoreWield)
+    {
+        if (!TryComp<WieldableComponent>(staff, out var wieldable) || wieldable.Wielded ||
+            !_hands.TryPickupAnyHand(user, staff) || !_hands.IsHolding(user, staff))
+            return false;
+
+        if (restoreWield)
+            TryWieldStaff(user, staff, wieldable);
+
+        return _hands.IsHolding(user, staff) && _toggle.IsActivated(staff);
+    }
 
     private bool TryWieldStaff(EntityUid user, EntityUid staff, WieldableComponent wieldable)
     {
@@ -367,7 +423,6 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
 
         // Native wield sets Wielded before creating the grip, and its callbacks can remove it.
         ReleaseGrip(user, staff, wieldable, grip, force: true);
-        SetActive(user, staff, false);
         return false;
     }
 
@@ -411,10 +466,11 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         if (args.Cancelled)
             return;
 
-        if (!TryComp<WieldableComponent>(staff.Owner, out var wieldable) || !wieldable.Wielded ||
+        if (!TryGetHolder(staff.Owner, out var holder) || (args.User != null && args.User != holder) ||
             !TryGetPair(staff, out var pair) || !pair.Joined ||
             !_modular.TryGetAssemblyColor(pair.Tail, out var tailColor) ||
-            !_modular.TryApplyAssembly(pair.Lead, staff.Owner, staff.Comp.JoinedDamageBonus))
+            !_modular.TryApplyAssembly(pair.Lead, staff.Owner,
+                HasTwoHandedGrip(staff.Owner, holder) ? staff.Comp.JoinedDamageBonus : null))
         {
             args.Cancelled = true;
             args.Popup = Loc.GetString("sw-split-saber-staff-incomplete");
@@ -424,6 +480,147 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         _appearance.SetData(staff.Owner, SWSplitSaberStaffVisuals.TailColor, tailColor);
     }
 
-    private void OnToggled(Entity<SWSplitSaberStaffComponent> staff, ref ItemToggledEvent args) =>
+    private void OnToggled(Entity<SWSplitSaberStaffComponent> staff, ref ItemToggledEvent args)
+    {
         _modular.UpdateAttackRate(staff.Owner, args.Activated ? staff.Comp.Lead : null);
+        SetAttackAngle(staff, args.Activated && TryGetHolder(staff.Owner, out var holder) &&
+            HasTwoHandedGrip(staff.Owner, holder));
+        if (!args.Activated)
+            _block.LowerBlock(staff.Owner);
+    }
+
+    private void OnWielded(Entity<SWSplitSaberStaffComponent> staff, ref ItemWieldedEvent args) =>
+        UpdateGrip(staff, args.User);
+
+    private void OnUnwielded(Entity<SWSplitSaberStaffComponent> staff, ref ItemUnwieldedEvent args)
+    {
+        // Native unwield has cleared its state and queued this exact grip for deletion.
+        if (!args.Force && FindGripPlaceholder(args.User, staff.Owner) is { } grip)
+            Del(grip);
+
+        UpdateGrip(staff, args.User);
+    }
+
+    private void OnUnequipped(Entity<SWSplitSaberStaffComponent> staff, GotUnequippedHandEvent args)
+    {
+        _block.LowerBlock(staff.Owner);
+        if (!_throws.KeepsStaffPowerOnRelease(staff.Owner, args.User))
+            SetActive(args.User, staff.Owner, false);
+    }
+
+    private void OnGetBlockDuration(Entity<SWSplitSaberStaffComponent> staff, ref SWGetBlockDurationEvent args)
+    {
+        if (_toggle.IsActivated(staff.Owner) && TryGetHolder(staff.Owner, out var holder) && HasTwoHandedGrip(staff.Owner, holder))
+            args.Seconds += staff.Comp.WieldedBlockBonusSeconds;
+    }
+
+    private void UpdateGrip(Entity<SWSplitSaberStaffComponent> staff, EntityUid user)
+    {
+        var active = _toggle.IsActivated(staff.Owner);
+        var twoHanded = active && HasTwoHandedGrip(staff.Owner, user);
+        SetAttackAngle(staff, twoHanded);
+        if (!twoHanded)
+            _block.ClampBlockToBaseDuration(staff.Owner);
+
+        if (!active || staff.Comp.Lead is not { } lead ||
+            !_modular.TryApplyAssembly(lead, staff.Owner, twoHanded ? staff.Comp.JoinedDamageBonus : null) ||
+            !TryComp<ItemToggleMeleeWeaponComponent>(staff.Owner, out var toggleMelee) ||
+            toggleMelee.ActivatedDamage is not { } damage || !TryComp<MeleeWeaponComponent>(staff.Owner, out var melee))
+            return;
+
+        melee.Damage = damage;
+        DirtyField(staff.Owner, melee, nameof(MeleeWeaponComponent.Damage));
+    }
+
+    private void SetAttackAngle(Entity<SWSplitSaberStaffComponent> staff, bool twoHanded)
+    {
+        if (!TryComp<MeleeWeaponComponent>(staff.Owner, out var melee))
+            return;
+
+        var baseAngle = staff.Comp.BaseAttackAngle ??= melee.Angle;
+        var angle = twoHanded ? baseAngle + Angle.FromDegrees(staff.Comp.WieldedArcBonusDegrees) : baseAngle;
+        if (melee.Angle != angle)
+        {
+            melee.Angle = angle;
+            DirtyField(staff.Owner, melee, nameof(MeleeWeaponComponent.Angle));
+        }
+    }
+
+    private bool TryGetHolder(EntityUid staff, out EntityUid holder)
+    {
+        holder = default;
+        if (!_containers.TryGetContainingContainer(staff, out var container) || !_hands.IsHolding(container.Owner, staff))
+            return false;
+
+        holder = container.Owner;
+        return true;
+    }
+
+    internal bool HasTwoHandedGrip(EntityUid staff, EntityUid user) =>
+        TryComp<WieldableComponent>(staff, out var wieldable) && wieldable.Wielded &&
+        _hands.IsHolding(user, staff) && FindGripPlaceholder(user, staff) != null;
+
+    private void OnHalfBlocked(Entity<SWSplitSaberHalfComponent> half, ref SWMeleeBlockedEvent args)
+    {
+        if (!TryGetReadyPair(half, args.Defender, out var staff) || staff.PairedCounterSeconds <= 0f || staff.PairedCounterDamage.Empty)
+            return;
+
+        staff.CounterGeneration++;
+        staff.CounterUser = args.Defender;
+        staff.CounterUntil = _timing.CurTime + TimeSpan.FromSeconds(staff.PairedCounterSeconds);
+    }
+
+    private void OnCounterDamage(Entity<SWSplitSaberHalfComponent> half, ref SWSplitSaberCounterDamageEvent args)
+    {
+        if (!TryGetReadyPair(half, args.User, out var staff) || staff.CounterUser != args.User ||
+            staff.CounterUntil <= _timing.CurTime)
+            return;
+
+        var generation = staff.CounterGeneration;
+        args.Bonus = staff.PairedCounterDamage;
+        args.OnDamageApplied = () =>
+        {
+            if (staff.CounterGeneration == generation)
+                ClearCounter(staff);
+        };
+    }
+
+    private void OnHalfToggled(Entity<SWSplitSaberHalfComponent> half, ref ItemToggledEvent args)
+    {
+        if (!args.Activated)
+            ClearHalfCounter(half);
+    }
+
+    private void OnHalfUnequipped(Entity<SWSplitSaberHalfComponent> half, GotUnequippedHandEvent args) =>
+        ClearHalfCounter(half);
+
+    private void OnHalfThrown(Entity<SWSplitSaberHalfComponent> half, ref ThrownEvent args) =>
+        ClearHalfCounter(half);
+
+    private void ClearHalfCounter(Entity<SWSplitSaberHalfComponent> half)
+    {
+        if (TryGetPairStaff(half, out _, out var staff))
+            ClearCounter(staff);
+    }
+
+    private static void ClearCounter(SWSplitSaberStaffComponent staff)
+    {
+        staff.CounterGeneration++;
+        staff.CounterUser = null;
+        staff.CounterUntil = default;
+    }
+
+    private bool TryGetPairStaff(Entity<SWSplitSaberHalfComponent> half, out EntityUid staffUid,
+        [NotNullWhen(true)] out SWSplitSaberStaffComponent? staff)
+    {
+        staffUid = half.Comp.Staff ?? EntityUid.Invalid;
+        return TryComp(staffUid, out staff) && (staff.Lead == half.Owner || staff.Tail == half.Owner);
+    }
+
+    private bool TryGetReadyPair(Entity<SWSplitSaberHalfComponent> half, EntityUid user,
+        [NotNullWhen(true)] out SWSplitSaberStaffComponent? staff) =>
+        TryGetPairStaff(half, out var staffUid, out staff) && !staff.Changing &&
+        TryGetPair((staffUid, staff), out var pair) && pair.Separated &&
+        _hands.IsHolding(user, pair.Lead) && _hands.IsHolding(user, pair.Tail) &&
+        _toggle.IsActivated(pair.Lead) && _toggle.IsActivated(pair.Tail);
 }

@@ -259,7 +259,10 @@ public abstract class SharedWieldableSystem : EntitySystem
             return false;
         }
 
-        if (_hands.CountFreeableHands((user, hands), except: uid) < component.FreeHandsRequired)
+        var freeHands = component.DropItemsOnWield
+            ? _hands.CountFreeableHands((user, hands), except: uid)
+            : _hands.CountFreeHands((user, hands));
+        if (freeHands < component.FreeHandsRequired)
         {
             if (!quiet)
             {
@@ -318,6 +321,9 @@ public abstract class SharedWieldableSystem : EntitySystem
         if (component.WieldSound != null)
             _audio.PlayPredicted(component.WieldSound, used, user);
 
+        dropOthers &= component.DropItemsOnWield;
+        requireHeldGrip |= !component.DropItemsOnWield;
+
         //This section handles spawning the virtual item(s) to occupy the required additional hand(s).
         var virtuals = new ValueList<EntityUid>();
         for (var i = 0; i < component.FreeHandsRequired; i++)
@@ -337,6 +343,9 @@ public abstract class SharedWieldableSystem : EntitySystem
             {
                 QueueDel(existingVirtual);
             }
+
+            if (!component.DropItemsOnWield)
+                TryUnwield(used, component, user, force: true);
 
             return false;
         }

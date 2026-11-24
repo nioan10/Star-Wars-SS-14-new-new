@@ -171,17 +171,18 @@ public sealed partial class ForceAbilityDistanceInteractSystem : EntitySystem
     private void CatchPoweredStaff(EntityUid user, Entity<SWDoubleSaberThrowVisualComponent> staff,
         ForceAbilityDistanceInteractComponent attraction)
     {
-        var regripped = false;
+        var caughtLit = false;
         try
         {
-            // Stop the attraction to unlock pickup. Keep power while pickup and regrip are in progress.
+            // Stop the attraction to unlock pickup. Keep power until the catch attempt finishes.
+            var restoreWield = staff.Comp.RestoreWieldOnReturn;
             StopAttractingByForce(user, attraction);
-            regripped = _interactionSystem.InRangeUnobstructed(user, staff.Owner) &&
-                        _splitStaff.TryCatchPoweredStaff(user, staff.Owner);
+            caughtLit = _interactionSystem.InRangeUnobstructed(user, staff.Owner) &&
+                        _splitStaff.TryCatchPoweredStaff(user, staff.Owner, restoreWield);
         }
         finally
         {
-            _saberThrows.FinishPoweredStaffCatch(staff, regripped);
+            _saberThrows.FinishPoweredStaffCatch(staff, caughtLit);
         }
     }
 

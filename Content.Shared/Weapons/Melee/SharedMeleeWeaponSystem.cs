@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Numerics;
+using Content.Shared._SW.ModularSaber;
 using Content.Shared.ActionBlocker;
 using Content.Shared.Actions.Events;
 using Content.Shared.Administration.Components;
@@ -66,6 +67,7 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
     [Dependency] protected readonly SharedTransformSystem TransformSystem = default!;
     [Dependency] private   readonly SharedStaminaSystem _stamina = default!;
     [Dependency] private   readonly DamageExamineSystem _damageExamine = default!;
+    [Dependency] private readonly SWSplitSaberCombatSystem _splitSaber = default!;
 
     private const int AttackMask = (int) (CollisionGroup.MobMask | CollisionGroup.Opaque);
 
@@ -360,6 +362,11 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
         return AttemptAttack(user, weaponUid, weapon, new DisarmAttackEvent(GetNetEntity(target), GetNetCoordinates(targetXform.Coordinates)), null);
     }
 
+    protected bool IsAttackCoolingDown(EntityUid user, EntityUid weaponUid, MeleeWeaponComponent weapon) =>
+        (_splitSaber.TryGetFamily(weaponUid, out var family)
+            ? _splitSaber.GetNextAttack(user, family)
+            : weapon.NextAttack) > Timing.CurTime;
+
     /// <summary>
     /// Called when a windup is finished and an attack is tried.
     /// </summary>
@@ -367,8 +374,10 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
     private bool AttemptAttack(EntityUid user, EntityUid weaponUid, MeleeWeaponComponent weapon, AttackEvent attack, ICommonSession? session)
     {
         var curTime = Timing.CurTime;
+        var pairedWeapon = _splitSaber.TryGetFamily(weaponUid, out var family);
+        var nextAttack = pairedWeapon ? _splitSaber.GetNextAttack(user, family) : weapon.NextAttack;
 
-        if (weapon.NextAttack > curTime)
+        if (nextAttack > curTime || (pairedWeapon && !_hands.IsHolding(user, weaponUid)))
             return false;
 
         if (!CombatMode.IsInCombatMode(user))
@@ -413,16 +422,20 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
         var swings = 0;
 
         // TODO: If we get autoattacks then probably need a shotcounter like guns so we can do timing properly.
-        if (weapon.NextAttack < curTime)
-            weapon.NextAttack = curTime;
+        if (nextAttack < curTime)
+            nextAttack = curTime;
 
-        while (weapon.NextAttack <= curTime)
+        while (nextAttack <= curTime)
         {
-            weapon.NextAttack += fireRate;
+            nextAttack += fireRate;
             swings++;
         }
 
-        DirtyField(weaponUid, weapon, nameof(MeleeWeaponComponent.NextAttack));
+        if (!pairedWeapon)
+        {
+            weapon.NextAttack = nextAttack;
+            DirtyField(weaponUid, weapon, nameof(MeleeWeaponComponent.NextAttack));
+        }
 
         // Do this AFTER attack so it doesn't spam every tick
         var ev = new AttemptMeleeEvent();
@@ -467,6 +480,9 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
 
             DoLungeAnimation(user, weaponUid, weapon.Angle, TransformSystem.ToMapCoordinates(GetCoordinates(attack.Coordinates)), weapon.Range, animation);
         }
+
+        if (pairedWeapon)
+            _splitSaber.RecordAttack(user, family, curTime, nextAttack);
 
         var attackEv = new MeleeAttackEvent(weaponUid);
         RaiseLocalEvent(user, ref attackEv);
@@ -541,7 +557,11 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
         var attackedEvent = new AttackedEvent(meleeUid, user, targetXform.Coordinates);
         RaiseLocalEvent(target.Value, attackedEvent);
 
-        var modifiedDamage = DamageSpecifier.ApplyModifierSets(damage + hitEvent.BonusDamage + attackedEvent.BonusDamage, hitEvent.ModifiersList);
+        var counter = _splitSaber.GetCounterDamage(meleeUid, user);
+        var hitDamage = damage + hitEvent.BonusDamage + attackedEvent.BonusDamage;
+        if (counter.Bonus != null)
+            hitDamage += counter.Bonus;
+        var modifiedDamage = DamageSpecifier.ApplyModifierSets(hitDamage, hitEvent.ModifiersList);
 
         if (Damageable.TryChangeDamage(target.Value, modifiedDamage, out var damageResult, origin:user, ignoreResistances:resistanceBypass))
         {
@@ -570,6 +590,7 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
 
         if (damageResult.GetTotal() > FixedPoint2.Zero)
         {
+            counter.OnDamageApplied?.Invoke();
             DoDamageEffect(targets, user, targetXform);
         }
     }
@@ -628,6 +649,7 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
         for (var i = entities.Count - 1; i >= 0; i--)
         {
             if (ArcRaySuccessful(entities[i],
+                    meleeUid,
                     userPos,
                     direction.ToWorldAngle(),
                     component.Angle,
@@ -708,12 +730,17 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
 
             var attackedEvent = new AttackedEvent(meleeUid, user, GetCoordinates(ev.Coordinates));
             RaiseLocalEvent(entity, attackedEvent);
-            var modifiedDamage = DamageSpecifier.ApplyModifierSets(damage + hitEvent.BonusDamage + attackedEvent.BonusDamage, hitEvent.ModifiersList);
+            var counter = _splitSaber.GetCounterDamage(meleeUid, user);
+            var hitDamage = damage + hitEvent.BonusDamage + attackedEvent.BonusDamage;
+            if (counter.Bonus != null)
+                hitDamage += counter.Bonus;
+            var modifiedDamage = DamageSpecifier.ApplyModifierSets(hitDamage, hitEvent.ModifiersList);
 
             var damageResult = Damageable.ChangeDamage(entity, modifiedDamage, origin: user, ignoreResistances: resistanceBypass);
 
             if (damageResult.GetTotal() > FixedPoint2.Zero)
             {
+                counter.OnDamageApplied?.Invoke();
                 // If the target has stamina and is taking blunt damage, they should also take stamina damage based on their blunt to stamina factor
                 if (damageResult.DamageDict.TryGetValue("Blunt", out var bluntDamage))
                 {
@@ -789,6 +816,7 @@ public abstract class SharedMeleeWeaponSystem : EntitySystem
     }
 
     protected virtual bool ArcRaySuccessful(EntityUid targetUid,
+        EntityUid weapon,
         Vector2 position,
         Angle angle,
         Angle arcWidth,

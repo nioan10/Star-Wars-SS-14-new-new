@@ -78,22 +78,33 @@
   parent: SWEnergySwordBase
   id: SWModularSaberStaff
   name: split lightsaber staff
-  description: A two-handed lightsaber staff that separates into two paired modular lightsabers.
+  description: A lightsaber staff that can be held in either grip or separated into two paired modular lightsabers.
   components:
   - type: SWSplitSaberStaff
     halfPrototype: SWModularSaberStaffHalf
     joinedDamageBonus:
       types:
         Slash: 5
+    wieldedArcBonusDegrees: 15
+    wieldedBlockBonusSeconds: 1
+    pairedCounterSeconds: 1.5
+    pairedCounterDamage:
+      types:
+        Slash: 5
+  - type: MeleeWeapon
+    resetOnHandSelected: false
   - type: ContainerContainer
     containers:
       staff-lead: !type:ContainerSlot {}
       staff-tail: !type:ContainerSlot {}
   - type: Wieldable
     wieldSound: null
+    dropItemsOnWield: false
+    useDelayOnWield: false
   - type: ItemToggle
     onUse: false
-    onActivate: false
+    onActivate: true
+    offOnUnwield: false
     predictable: false
   - type: EnergySword
     colorOptions: []
@@ -102,14 +113,8 @@
   - type: ToggleableVisuals
     spriteLayer: blade
     inhandVisuals:
-      left:
-      - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_inhands.rsi
-        state: inhand-left-lead
-        shader: unshaded
-      right:
-      - sprite: _SW/Objects/Weapons/Melee/split_saber_staff_inhands.rsi
-        state: inhand-right-lead
-        shader: unshaded
+      left: []
+      right: []
   - type: Sprite
     sprite: _SW/Objects/Weapons/Melee/split_saber_staff_blades.rsi
     layers:
@@ -133,6 +138,8 @@
   categories: [ HideSpawnMenu ]
   components:
   - type: SWSplitSaberHalf
+  - type: MeleeWeapon
+    resetOnHandSelected: false
   - type: ContainerContainer
     containers:
       staff-frame: !type:ContainerSlot {}
