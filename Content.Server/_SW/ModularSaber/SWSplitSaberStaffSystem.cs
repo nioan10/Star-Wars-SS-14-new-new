@@ -10,7 +10,6 @@ using Content.Shared.Inventory.VirtualItem;
 using Content.Shared.Item.ItemToggle;
 using Content.Shared.Item.ItemToggle.Components;
 using Content.Shared.Popups;
-using Content.Shared.Throwing;
 using Content.Shared.Verbs;
 using Content.Shared.Wieldable;
 using Content.Shared.Wieldable.Components;
@@ -80,7 +79,6 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         SubscribeLocalEvent<SWSplitSaberHalfComponent, SWSplitSaberCounterDamageEvent>(OnCounterDamage);
         SubscribeLocalEvent<SWSplitSaberHalfComponent, ItemToggledEvent>(OnHalfToggled);
         SubscribeLocalEvent<SWSplitSaberHalfComponent, GotUnequippedHandEvent>(OnHalfUnequipped);
-        SubscribeLocalEvent<SWSplitSaberHalfComponent, ThrownEvent>(OnHalfThrown);
     }
 
     internal bool TryInitialize(Entity<SWSplitSaberStaffComponent> staff, EntityUid lead, EntityUid tail)
@@ -594,10 +592,7 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
     private void OnHalfUnequipped(Entity<SWSplitSaberHalfComponent> half, ref GotUnequippedHandEvent args) =>
         ClearHalfCounter(half);
 
-    private void OnHalfThrown(Entity<SWSplitSaberHalfComponent> half, ref ThrownEvent args) =>
-        ClearHalfCounter(half);
-
-    private void ClearHalfCounter(Entity<SWSplitSaberHalfComponent> half)
+    internal void ClearHalfCounter(Entity<SWSplitSaberHalfComponent> half)
     {
         if (TryGetPairStaff(half, out _, out var staff))
             ClearCounter(staff);

@@ -14,6 +14,7 @@ namespace Content.Server._SW;
 public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
 {
     [Dependency] private readonly ForceAbilityDistanceInteractSystem _force = default!;
+    [Dependency] private readonly SWSplitSaberStaffSystem _splitStaff = default!;
     [Dependency] private readonly SharedPhysicsSystem _physicsSystem = default!;
     public override void Initialize()
     {
@@ -34,8 +35,11 @@ public sealed partial class SWAbilityThrowSwordSystem : EntitySystem
         }
     }
 
-    private void OnPairedSaberThrown(Entity<SWSplitSaberHalfComponent> ent, ref ThrownEvent args) =>
+    private void OnPairedSaberThrown(Entity<SWSplitSaberHalfComponent> ent, ref ThrownEvent args)
+    {
         ent.Comp.ReturnGeneration++;
+        _splitStaff.ClearHalfCounter(ent);
+    }
 
     private void OnPairedSaberInserted(Entity<SWSplitSaberHalfComponent> ent, ref EntGotInsertedIntoContainerMessage args) =>
         ent.Comp.ReturnGeneration++;
