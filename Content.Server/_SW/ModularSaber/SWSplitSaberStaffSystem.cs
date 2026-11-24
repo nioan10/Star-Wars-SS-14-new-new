@@ -501,7 +501,7 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
         UpdateGrip(staff, args.User);
     }
 
-    private void OnUnequipped(Entity<SWSplitSaberStaffComponent> staff, GotUnequippedHandEvent args)
+    private void OnUnequipped(Entity<SWSplitSaberStaffComponent> staff, ref GotUnequippedHandEvent args)
     {
         _block.LowerBlock(staff.Owner);
         if (!_throws.KeepsStaffPowerOnRelease(staff.Owner, args.User))
@@ -591,7 +591,7 @@ public sealed class SWSplitSaberStaffSystem : EntitySystem
             ClearHalfCounter(half);
     }
 
-    private void OnHalfUnequipped(Entity<SWSplitSaberHalfComponent> half, GotUnequippedHandEvent args) =>
+    private void OnHalfUnequipped(Entity<SWSplitSaberHalfComponent> half, ref GotUnequippedHandEvent args) =>
         ClearHalfCounter(half);
 
     private void OnHalfThrown(Entity<SWSplitSaberHalfComponent> half, ref ThrownEvent args) =>
